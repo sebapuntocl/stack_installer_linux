@@ -1,4 +1,4 @@
-# 🚀 Stack Installer v2.0
+# 🚀 Stack er v2.0
 
 Script de instalación automatizada de entorno completo de desarrollo web para Debian/Ubuntu.
 
@@ -36,13 +36,13 @@ Script de instalación automatizada de entorno completo de desarrollo web para D
 
 ```bash
 # Descargar el script
-wget https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/install_lamp.sh
+wget https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/install.sh
 
 # Dar permisos de ejecución
-chmod +x install_lamp.sh
+chmod +x install.sh
 
 # Ejecutar
-./install_lamp.sh
+./install.sh
 ```
 
 ## ⚙️ Configuración
@@ -95,12 +95,12 @@ redis-cli                      # Redis
 # Python
 python3 -m venv mi_entorno     # Crear entorno virtual
 source mi_entorno/bin/activate # Activar entorno
-pip install paquete            # Instalar paquetes
+pip  paquete            # Instalar paquetes
 
 # Node.js
 node --version                 # Ver versión de Node
 npm --version                  # Ver versión de npm
-npm install -g paquete         # Instalar paquetes globales
+npm  -g paquete         # Instalar paquetes globales
 ```
 
 ## 🧪 Verificar instalación
@@ -147,7 +147,7 @@ sudo systemctl restart apache2
 ### Mailpit no se instala
 ```bash
 # Instalación manual
-curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | sudo bash
+curl -sL https://raw.githubusercontent.com/axllent/mailpit/develop/.sh | sudo bash
 ```
 
 ### Node.js no aparece después de instalar
@@ -159,7 +159,7 @@ source ~/.bashrc
 nvm --version
 
 # Instala Node.js LTS manualmente si es necesario
-nvm install --lts
+nvm  --lts
 nvm use --lts
 ```
 
@@ -168,7 +168,7 @@ nvm use --lts
 # En tu carpeta de proyecto
 python3 -m venv venv
 source venv/bin/activate
-pip install django  # o cualquier paquete que necesites
+pip  django  # o cualquier paquete que necesites
 ```
 
 ## 📝 Configuración PHP
