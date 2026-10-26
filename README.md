@@ -1,493 +1,341 @@
-# 🚀 LAMP Stack Installer
+# install-dev
 
-Script automatizado para instalación de entorno de desarrollo web profesional en Debian/Ubuntu/Linux Mint.
+Un solo script para dejar una notebook de desarrollo lista en **Debian** y **Ubuntu**:
+Nginx + PHP 8.5, MariaDB, PostgreSQL 18, Redis, Node.js 24, Python (con `uv`), Mailpit,
+HTTPS local con mkcert, DBeaver, VS Code y un prompt con Oh My Bash.
 
-[![Bash](https://img.shields.io/badge/bash-5.0%2B-green.svg)](https://www.gnu.org/software/bash/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Debian](https://img.shields.io/badge/debian-11%2B-red.svg)](https://www.debian.org/)
-[![Ubuntu](https://img.shields.io/badge/ubuntu-20.04%2B-orange.svg)](https://ubuntu.com/)
+La idea: instalar, abrir una terminal nueva y empezar a programar.
 
-## 📋 Descripción
-
-Script bash profesional que automatiza la instalación y configuración de un entorno completo de desarrollo web LAMP (Linux, Apache, MariaDB, PHP) con herramientas modernas como Docker, Node.js, Redis, PostgreSQL y más.
-
-Ideal para configurar rápidamente una estación de trabajo de desarrollo después de una instalación limpia del sistema operativo.
-
-## ✨ Características
-
-### Stack Principal
-- ⚡ **Apache 2** - Servidor web con módulos esenciales (rewrite, headers, SSL)
-- 🐘 **PHP 8.4+** - Con 15+ extensiones (mbstring, xml, curl, mysql, pgsql, redis, etc.)
-- 🗄️ **MariaDB** - Sistema de gestión de bases de datos (fork de MySQL)
-- 🐘 **PostgreSQL** - Base de datos relacional avanzada
-- 🔴 **Redis** - Sistema de caché en memoria
-
-### Herramientas de Desarrollo
-- 📦 **Composer** - Gestor de dependencias PHP
-- 🐳 **Docker + Docker Compose** - Plataforma de contenedores
-- 🎛️ **Portainer CE** - Interfaz web para gestionar Docker
-- 🟢 **Node.js (LTS)** - Runtime JavaScript con npm (vía nvm)
-- 🐍 **Python 3** - Con pip y venv para entornos virtuales
-- 📧 **Mailpit** - Capturador de emails para testing
-- 💾 **Adminer** - Gestor web de bases de datos (alternativa ligera a phpMyAdmin)
-- 📊 **Supervisor** - Gestor de procesos en segundo plano
-
-### Utilidades del Sistema
-- `git` - Control de versiones
-- `curl`, `wget` - Descarga de archivos
-- `htop` - Monitor de procesos
-- `ncdu` - Análisis de espacio en disco
-- `build-essential` - Compiladores C/C++
-- `net-tools` - Herramientas de red
-- VLC Media Player
-- FileZilla (cliente FTP)
-
-## 🖥️ Sistemas Soportados
-
-- ✅ **Debian 11** (Bullseye)
-- ✅ **Debian 12** (Bookworm)
-- ✅ **Debian 13** (Trixie/Testing)
-- ✅ **Ubuntu 20.04 LTS** (Focal)
-- ✅ **Ubuntu 22.04 LTS** (Jammy)
-- ✅ **Ubuntu 24.04 LTS** (Noble)
-- ✅ **Linux Mint 21.x** (basado en Ubuntu 22.04)
-- ✅ **Linux Mint 22.x** (basado en Ubuntu 24.04)
-
-## 📥 Instalación
-
-### Descarga directa
-```bash
-# Descargar el script
-wget https://raw.githubusercontent.com/TU_USUARIO/lamp-installer/main/install.sh
-
-# Dar permisos de ejecución
-chmod +x install.sh
-
-# Ejecutar
-./install.sh
-```
-
-### Clonar repositorio
-```bash
-git clone https://github.com/TU_USUARIO/lamp-installer.git
-cd lamp-installer
-chmod +x install.sh
-./install.sh
-```
-
-## ⚙️ Configuración
-
-Antes de ejecutar el script, puedes ajustar estas variables en la parte superior del archivo:
-```bash
-TIMEZONE="America/Santiago"  # Cambia según tu zona horaria
-```
-
-Zonas horarias comunes:
-- `America/Santiago` (Chile)
-- `America/Argentina/Buenos_Aires` (Argentina)
-- `America/Bogota` (Colombia)
-- `America/Lima` (Perú)
-- `America/Mexico_City` (México)
-- `America/New_York` (USA Este)
-- `Europe/Madrid` (España)
-
-El script detecta automáticamente:
-- ✅ Usuario del sistema (no necesitas editar `USER_NAME`)
-- ✅ Sistema operativo (Debian/Ubuntu/Mint)
-- ✅ Versión de PHP instalada
-- ✅ Servicios ya instalados (evita reinstalaciones)
-
-## 📂 Estructura de Archivos
-```
-/home/TU_USUARIO/
-└── proyectos/
-    └── php/
-        ├── index.php              # Archivo de prueba (phpinfo)
-        └── adminer/
-            └── index.php          # Adminer 4.8.1
-
-/etc/apache2/sites-available/
-└── proyecto-ejemplo.conf          # Template de VirtualHost
-```
-
-## 🔐 Credenciales por Defecto
-
-### MariaDB
-```
-Usuario desarrollo: TU_USUARIO
-Contraseña: dev2024
-
-Usuario root: root
-Contraseña: root
-```
-
-### PostgreSQL
-```
-Usuario desarrollo: TU_USUARIO
-Contraseña: root
-
-Usuario sistema: postgres
-Contraseña: root
-```
-
-### Portainer
-```
-URL: https://localhost:9443
-Nota: Crear usuario administrador en el primer acceso
-```
-
-### Adminer
-```
-URL: http://localhost/adminer/
-Nota: Usar credenciales de MariaDB o PostgreSQL
-```
-
-⚠️ **ADVERTENCIA**: Estas contraseñas son **SOLO para desarrollo local**. Nunca uses estas configuraciones en producción.
-
-## 🌐 URLs de Acceso
-
-| Servicio | URL | Descripción |
-|----------|-----|-------------|
-| Apache | http://localhost | Servidor web principal |
-| PHP Info | http://localhost/index.php | Información de PHP |
-| Adminer | http://localhost/adminer/ | Gestor de bases de datos |
-| Mailpit | http://localhost:8025 | Capturador de emails |
-| Portainer | https://localhost:9443 | Gestor de Docker |
-
-## 🔧 Comandos Útiles
-
-### Gestión de Servicios
-```bash
-# Reiniciar Apache
-sudo systemctl restart apache2
-
-# Reiniciar PHP-FPM
-sudo systemctl restart php8.4-fpm
-
-# Ver estado de servicios
-sudo systemctl status apache2
-sudo systemctl status mariadb
-sudo systemctl status postgresql
-sudo systemctl status redis-server
-sudo systemctl status docker
-
-# Ver logs de Apache
-sudo tail -f /var/log/apache2/error.log
-```
-
-### Bases de Datos
-```bash
-# Conectar a MariaDB
-mariadb -u TU_USUARIO -p
-
-# Conectar como root
-sudo mariadb -u root -p
-
-# Conectar a PostgreSQL
-psql -U TU_USUARIO
-
-# Cliente Redis
-redis-cli
-```
-
-### PHP y Composer
-```bash
-# Instalar dependencias
-composer install
-
-# Agregar paquete
-composer require vendor/package
-
-# Crear proyecto Laravel
-composer create-project laravel/laravel mi-proyecto
-
-# Servidor de desarrollo Laravel
-cd mi-proyecto
-php artisan serve
-```
-
-### Docker
-```bash
-# Ver contenedores activos
-docker ps
-
-# Ver todos los contenedores
-docker ps -a
-
-# Iniciar proyecto con Docker Compose
-docker compose up -d
-
-# Ver logs de contenedor
-docker logs nombre_contenedor
-
-# Detener todos los contenedores
-docker stop $(docker ps -aq)
-```
-
-### Python
-```bash
-# Crear entorno virtual
-python3 -m venv mi_entorno
-
-# Activar entorno virtual
-source mi_entorno/bin/activate
-
-# Desactivar entorno
-deactivate
-```
-
-### Node.js
-```bash
-# Ver versión
-node --version
-npm --version
-
-# Instalar paquetes globalmente
-npm install -g package-name
-
-# Cambiar versión de Node.js
-nvm install 18
-nvm use 18
-```
-
-## 🎯 Crear un Proyecto
-
-### Proyecto Laravel
-```bash
-cd ~/proyectos/php
-composer create-project laravel/laravel mi-app
-cd mi-app
-
-# Configurar base de datos en .env
-DB_CONNECTION=mysql
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_DATABASE=mi_base_de_datos
-DB_USERNAME=TU_USUARIO
-DB_PASSWORD=dev2024
-
-# Crear base de datos
-mariadb -u TU_USUARIO -p
-CREATE DATABASE mi_base_de_datos;
-exit;
-
-# Ejecutar migraciones
-php artisan migrate
-
-# Servidor de desarrollo
-php artisan serve
-```
-
-### VirtualHost Personalizado
-```bash
-# 1. Crear directorio del proyecto
-mkdir -p ~/proyectos/php/mi-proyecto
-
-# 2. Copiar y editar el VirtualHost de ejemplo
-sudo cp /etc/apache2/sites-available/proyecto-ejemplo.conf \
-        /etc/apache2/sites-available/mi-proyecto.conf
-
-sudo nano /etc/apache2/sites-available/mi-proyecto.conf
-
-# 3. Activar el sitio
-sudo a2ensite mi-proyecto.conf
-
-# 4. Recargar Apache
-sudo systemctl reload apache2
-
-# 5. Agregar a /etc/hosts
-echo "127.0.0.1 mi-proyecto.local" | sudo tee -a /etc/hosts
-
-# 6. Acceder en el navegador
-# http://mi-proyecto.local
-```
-
-## 🔍 Solución de Problemas
-
-### Apache no inicia
-```bash
-# Ver error específico
-sudo systemctl status apache2
-sudo journalctl -xe
-
-# Verificar puertos en uso
-sudo netstat -tulpn | grep :80
-sudo netstat -tulpn | grep :443
-
-# Verificar configuración
-sudo apache2ctl configtest
-```
-
-### PHP no funciona
-```bash
-# Verificar PHP-FPM
-sudo systemctl status php8.4-fpm
-
-# Reiniciar PHP-FPM
-sudo systemctl restart php8.4-fpm
-
-# Ver versión de PHP
-php -v
-
-# Ver módulos instalados
-php -m
-```
-
-### MariaDB no acepta conexiones
-```bash
-# Verificar estado
-sudo systemctl status mariadb
-
-# Reiniciar servicio
-sudo systemctl restart mariadb
-
-# Acceder como root para diagnóstico
-sudo mariadb
-```
-
-### Docker sin permisos
-```bash
-# Verificar que estás en el grupo docker
-groups
-
-# Si no aparece 'docker', cerrar y abrir terminal
-# O ejecutar:
-newgrp docker
-
-# Verificar que funciona
-docker ps
-```
-
-### Portainer no carga
-```bash
-# Verificar que el contenedor está corriendo
-sudo docker ps | grep portainer
-
-# Ver logs
-sudo docker logs portainer
-
-# Reiniciar contenedor
-sudo docker restart portainer
-
-# Puede tardar 1-2 minutos en estar disponible
-```
-
-## 📊 Verificación Post-Instalación
-```bash
-# Ver todos los servicios
-systemctl list-units --type=service --state=running | grep -E 'apache|mariadb|postgresql|redis|docker'
-
-# Verificar versiones
-php -v
-composer --version
-python3 --version
-node --version
-npm --version
-docker --version
-mariadb --version
-psql --version
-```
-
-## 🔄 Actualizar Componentes
-```bash
-# Actualizar sistema
-sudo apt update && sudo apt upgrade -y
-
-# Actualizar Composer
-sudo composer self-update
-
-# Actualizar npm globalmente
-npm install -g npm@latest
-
-# Actualizar Node.js (vía nvm)
-nvm install --lts
-nvm alias default 'lts/*'
-```
-
-## 🗑️ Desinstalación
-
-Si necesitas desinstalar algún componente:
-```bash
-# Detener y deshabilitar servicios
-sudo systemctl stop apache2 mariadb postgresql redis-server docker
-sudo systemctl disable apache2 mariadb postgresql redis-server docker
-
-# Desinstalar paquetes (ejemplo con Apache)
-sudo apt remove --purge apache2 apache2-utils
-sudo apt autoremove -y
-
-# Eliminar directorios de configuración
-sudo rm -rf /etc/apache2
-sudo rm -rf /var/www/html
-
-# Eliminar directorio de proyectos
-rm -rf ~/proyectos/php
-```
-
-## 🤝 Contribuciones
-
-Las contribuciones son bienvenidas. Por favor:
-
-1. Fork el repositorio
-2. Crea una rama para tu feature (`git checkout -b feature/mejora`)
-3. Commit tus cambios (`git commit -am 'Agrega nueva funcionalidad'`)
-4. Push a la rama (`git push origin feature/mejora`)
-5. Abre un Pull Request
-
-## 📝 Changelog
-
-### v2.2 (2024)
-- ✨ Detección automática del usuario del sistema
-- ✨ Mensajes más descriptivos y específicos
-- ✨ Verificación de servicios ya instalados (evita reinstalaciones)
-- ✨ Soporte para Debian 13 (Trixie)
-- ✨ Mejoras en detección de sistema operativo
-- 🐛 Correcciones en instalación de Portainer
-- 🐛 Manejo de errores mejorado
-
-### v2.1
-- ✨ Cambio de MySQL a MariaDB
-- ✨ Agregado Composer, Adminer, Python, Node.js
-- ✨ Soporte para Docker y Portainer
-
-### v2.0
-- 🎉 Versión inicial pública
-
-## ⚠️ Advertencias Importantes
-
-1. **Solo para desarrollo local**: Este script configura un entorno con contraseñas simples y permisos relajados. NO usar en producción.
-
-2. **Backup antes de ejecutar**: Aunque el script es seguro, siempre haz backup de datos importantes antes de ejecutar scripts de instalación masiva.
-
-3. **Compatibilidad**: Probado principalmente en instalaciones limpias de Debian/Ubuntu. En sistemas con configuraciones personalizadas, pueden surgir conflictos.
-
-4. **Permisos de Docker**: Después de la instalación, necesitas cerrar y abrir la terminal para usar Docker sin `sudo`.
-
-## 📄 Licencia
-
-MIT License - ver archivo [LICENSE](LICENSE) para más detalles.
-
-## 👤 Autor
-
-**Sebastian Sotelo**
-
-
-Este script utiliza las siguientes tecnologías open source:
-- Apache Software Foundation
-- PHP Development Team
-- MariaDB Foundation
-- PostgreSQL Global Development Group
-- Docker Inc.
-- Node.js Foundation
-- Y muchos otros proyectos open source
-
-## 📞 Soporte
-
-Si encuentras algún problema:
-1. Revisa la sección [Solución de Problemas](#-solución-de-problemas)
-2. Busca en [Issues](https://github.com/TU_USUARIO/lamp-installer/issues)
-3. Abre un nuevo Issue con detalles del problema
+> **Solo para máquinas de desarrollo personales.** El script corre como root, relaja
+> permisos a propósito (PHP-FPM usa tu usuario, `dev` tiene todos los privilegios en
+> MariaDB) y deja contraseñas en un archivo de texto. No lo uses en un servidor.
 
 ---
 
-⭐ Si este script te fue útil, considera darle una estrella al repositorio!
+## Qué instala
+
+| Componente | Detalle |
+|---|---|
+| **Base** | `curl`, `wget`, `git`, `unzip`, `zip`, `jq`, `tree`, `build-essential`, `ca-certificates`, `gnupg`, `openssl`, `acl` |
+| **Nginx** | Sitio por defecto que lista `~/proyectos/php`, escuchando **solo en `127.0.0.1`** |
+| **PHP 8.5** (FPM + CLI) | Extensiones: `mysql`, `pgsql`, `sqlite3`, `mbstring`, `xml`, `curl`, `zip`, `gd`, `intl`, `bcmath`, `readline`, `redis`, `imagick`, `xdebug` (las que existan en el repo). OPcache viene integrado en PHP |
+| **Composer** | Instalador oficial verificando la firma SHA-384, más el instalador global de Laravel |
+| **MariaDB** | La versión de tu distro. Usuario `dev` con contraseña, y un usuario con tu nombre de Linux por `unix_socket` |
+| **PostgreSQL 18** | Rol y base con tu nombre de usuario, más el usuario `postgres` |
+| **Redis** (o Valkey) | Limitado a 512 MB con política `allkeys-lru` |
+| **Node.js 24** | Desde NodeSource, con `corepack` (`pnpm`/`yarn`) y `npm -g` sin sudo |
+| **Python 3** | `venv`, `pip`, `pipx`, headers de desarrollo y `uv` |
+| **Mailpit** | Captura todo el correo saliente (también `mail()` de PHP) |
+| **mkcert** | CA local de confianza: tus sitios `.test` tienen HTTPS válido |
+| **DBeaver CE** y **VS Code** | Solo si el script detecta un entorno gráfico |
+| **Herramientas CLI** | `ripgrep`, `fd`, `bat`, `fzf`, `btop`, `ncdu`, `httpie`, `tmux` |
+| **Git** | Configuración global, `.gitignore_global` y llave SSH ed25519 (si completas nombre y correo) |
+| **Oh My Bash** | Tema `powerline-icon`, más las fuentes `fonts-powerline` y `fonts-noto-color-emoji` |
+
+El menú inicial ofrece **1) TODO** o **2) PERSONALIZADO** (eliges bloque por bloque).
+La base del sistema y mkcert se instalan siempre.
+
+### De dónde sale cada cosa
+
+Para PHP y PostgreSQL el script **prefiere los repositorios de tu distro** y solo agrega
+uno externo si hace falta:
+
+- **PHP:** si tu distro ya trae la versión pedida (Ubuntu 26.04 trae 8.5), no agrega nada.
+  Si no: repo de [Sury](https://packages.sury.org/php/) en Debian; en Ubuntu, el PPA de
+  Ondřej Surý o, si el PPA no soporta tu versión, `packages.sury.org`.
+- **PostgreSQL:** repos de tu distro si traen la versión; si no, el repo oficial PGDG.
+- **Node.js:** NodeSource. **VS Code:** repo de Microsoft.
+
+---
+
+## Compatibilidad
+
+| Sistema | Estado |
+|---|---|
+| Ubuntu 26.04 LTS (`resolute`) | Objetivo principal |
+| Debian 13 (`trixie`) | Objetivo principal |
+| Ubuntu 24.04 LTS (`noble`) | Previsto (PHP vía PPA de Ondřej). Sin probar de punta a punta |
+| Derivadas de Ubuntu (Mint, Pop!_OS, Zorin) | Se tratan como Ubuntu. Sin probar |
+| Ubuntu 22.04 y anteriores | No soportado |
+| Fedora, Arch, macOS, otros | No soportado (el script se detiene) |
+
+Si algo falla en tu sistema, abre un *issue* con las últimas líneas del log (ver
+[Solución de problemas](#solución-de-problemas)).
+
+---
+
+## Instalación
+
+**1. Clona el repositorio**
+
+```bash
+git clone https://github.com/TU_USUARIO/TU_REPO.git
+cd TU_REPO
+```
+
+**2. Revisa el script y edita la configuración**
+
+Es un script que corre como root y descarga cosas de internet: léelo antes de ejecutarlo.
+Luego edita el bloque `CONFIGURACIÓN` del inicio:
+
+```bash
+nano install-dev.sh
+```
+
+Como mínimo, completa `GIT_NAME`, `GIT_EMAIL` y `TIMEZONE`.
+
+**3. Ejecútalo con `sudo`**
+
+```bash
+sudo bash install-dev.sh
+```
+
+Hazlo desde tu **usuario normal** con `sudo` delante, no desde una sesión de root
+(`sudo su`): el script necesita saber cuál es tu usuario real y se detiene si no lo sabe.
+
+Tarda entre 10 y 20 minutos según tu conexión. Los mensajes amarillos `[!]` son avisos
+(por ejemplo, una extensión de PHP que no existe en tu repo), no errores.
+
+**4. Abre una terminal nueva**
+
+Es necesario para ver el prompt de Oh My Bash y para que el `PATH` nuevo tome efecto.
+
+**5. Verifica**
+
+```bash
+cat ~/credenciales-dev.txt     # contraseñas y comandos útiles
+php -v
+node -v
+mariadb -e "select version();"
+psql -c "select version();"
+redis-cli ping                 # PONG  (valkey-cli si usas Valkey)
+```
+
+Y en el navegador: `http://localhost` (índice de proyectos) y `http://localhost:8025`
+(bandeja de Mailpit).
+
+---
+
+## Configuración
+
+Todas las opciones están en el bloque `CONFIGURACIÓN` al inicio de `install-dev.sh`.
+
+| Variable | Por defecto | Descripción |
+|---|---|---|
+| `GIT_NAME`, `GIT_EMAIL` | vacío | Si alguno está vacío, se omite la configuración de Git **y** la llave SSH |
+| `GIT_EDITOR` | `nano` | `nano`, `vim` o `code` |
+| `PHP_MAIN` | `8.5` | Versión de PHP a instalar |
+| `WEB_ROOT_REL` | `proyectos/php` | Carpeta de proyectos, relativa a tu home |
+| `TIMEZONE` | `America/Santiago` | Zona horaria de PHP |
+| `MARIADB_DEV_USER` | `dev` | Usuario de aplicación de MariaDB |
+| `MARIADB_DEV_PASSWORD` | `auto` | `auto` genera una contraseña aleatoria; o fija una |
+| `POSTGRES_PASSWORD` | `auto` | Ídem para PostgreSQL |
+| `NODE_MAJOR` | `24` | `22` o `24` |
+| `PG_VERSION` | `18` | Versión de PostgreSQL |
+| `INSTALL_XDEBUG` | `s` | `s` o `n` |
+| `CACHE_ENGINE` | `redis` | `redis` o `valkey` (si tu distro no trae Valkey, usa Redis) |
+| `INSTALL_VSCODE` | `s` | Solo se instala si hay entorno gráfico |
+| `OMB_THEME` | `powerline-icon` | Tema de Oh My Bash (ver `~/.oh-my-bash/themes`) |
+
+---
+
+## Uso diario
+
+### Sitios con HTTPS: `newsite` y `delsite`
+
+```bash
+cd ~/proyectos/php
+laravel new tienda
+sudo newsite tienda        # → https://tienda.test
+sudo delsite tienda        # quita vhost, certificado y línea de /etc/hosts
+```
+
+- El *docroot* es `tienda/public` si existe; si no, la raíz del proyecto.
+- `newsite` genera el certificado con mkcert y agrega `tienda.test` a `/etc/hosts`.
+- `delsite` **no borra tus archivos**, solo la configuración del sitio.
+- El vhost y el certificado también cubren `*.tienda.test`, pero `/etc/hosts` no admite
+  comodines: para subdominios agrega la línea a mano o usa `dnsmasq`.
+
+### Laravel: `.env`
+
+```env
+# MariaDB
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USERNAME=dev
+DB_PASSWORD=<ver ~/credenciales-dev.txt>
+
+# PostgreSQL (alternativa)
+# DB_CONNECTION=pgsql
+# DB_PORT=5432
+# DB_USERNAME=<tu usuario de Linux>
+
+CACHE_STORE=redis          # Laravel 10 o anterior: CACHE_DRIVER=redis
+QUEUE_CONNECTION=redis
+REDIS_HOST=127.0.0.1
+
+MAIL_MAILER=smtp
+MAIL_HOST=127.0.0.1
+MAIL_PORT=1025
+```
+
+### Bases de datos
+
+| | Acceso rápido | Por red local |
+|---|---|---|
+| **MariaDB** | `mariadb` (tu usuario, sin contraseña) o `sudo mariadb` (root) | `mariadb -u dev -p -h 127.0.0.1` |
+| **PostgreSQL** | `psql` (rol con tu nombre, sin contraseña) | `psql -U <tu_usuario> -h 127.0.0.1` |
+
+DBeaver: conecta a `127.0.0.1:3306` (usuario `dev`) y `127.0.0.1:5432` (tu usuario).
+Trae su propio driver JDBC para Oracle, no necesitas instalar nada más para consultarlo.
+
+### Correo: Mailpit
+
+Todo el correo que mande tu app (o `mail()` de PHP) queda en `http://localhost:8025`.
+Nada sale a internet. SMTP en `127.0.0.1:1025`, sin autenticación ni TLS.
+
+### Xdebug
+
+Modo `trigger` (no frena nada hasta que se lo pidas), puerto `9003`:
+
+```bash
+XDEBUG_TRIGGER=1 php artisan tinker
+```
+
+En el navegador usa una extensión que envíe la cookie `XDEBUG_TRIGGER`.
+
+### Python
+
+Debian y Ubuntu recientes aplican PEP 668: `pip install` global **falla a propósito**
+(`externally-managed-environment`). Usa:
+
+```bash
+uv init miapp && cd miapp && uv add requests     # proyecto nuevo
+uv python install 3.12                           # otra versión de Python
+python3 -m venv .venv && source .venv/bin/activate
+pipx install ruff                                # herramientas de línea de comandos
+```
+
+### Node.js
+
+`pnpm` y `yarn` funcionan directo (vía `corepack`), y `npm i -g paquete` instala en
+`~/.npm-global` sin necesidad de `sudo`.
+
+---
+
+## Qué cambia en tu sistema
+
+**Archivos que crea**
+
+- `~/credenciales-dev.txt` (permisos 600): contraseñas y comandos útiles.
+  **Se sobrescribe en cada ejecución.**
+- `~/desinstalar-entorno.sh`
+- `~/.oh-my-bash`, `~/.npm-global`, `~/.gitignore_global`, `~/.ssh/id_ed25519`
+- `/usr/local/bin/newsite`, `delsite`, `composer`, `mailpit`; `/etc/dev-env.conf`
+- Log completo en `/var/log/dev-setup/install-<fecha>.log`
+
+**Configuración que modifica**
+
+- `php.ini` (FPM y CLI): `memory_limit=512M`, `upload_max_filesize=64M`,
+  `post_max_size=64M`, `max_execution_time=300`, zona horaria. Los originales quedan
+  como `*.backup-<fecha>`.
+- Pool de PHP-FPM: corre con **tu usuario** (así `storage/` y `cache/` de Laravel no
+  dan problemas de permisos).
+- `~/.bashrc`: **Oh My Bash lo reemplaza** por su plantilla. Tu archivo anterior queda en
+  `~/.bashrc.omb-backup-<fecha>`. Después se agregan líneas de `PATH`.
+- `/etc/hosts`: una línea por cada sitio que creas con `newsite`.
+- Nginx: se elimina el sitio `default`.
+- MariaDB: se eliminan los usuarios anónimos y la base `test`.
+- Tu usuario de Linux queda como rol de PostgreSQL con permisos de superusuario.
+
+**Código externo que descarga y ejecuta**
+
+- Instalador de Mailpit, de su repositorio oficial en GitHub (como root)
+- Instalador de Oh My Bash, rama `master` de su repositorio (como tu usuario)
+- Instalador de `uv`, desde `astral.sh` (como tu usuario)
+- Repositorios apt de NodeSource, Microsoft (VS Code) y, según tu sistema, Sury, el PPA
+  de Ondřej o PGDG
+
+---
+
+## Seguridad
+
+- **Léelo antes de correrlo.** Corre como root y ejecuta instaladores de terceros.
+- **Es para desarrollo.** PHP-FPM con tu usuario y `dev` con todos los privilegios son
+  cómodos en una notebook y malos en un servidor. No copies esta configuración a producción.
+- **Nginx solo escucha en `127.0.0.1`.** MariaDB, PostgreSQL y Redis escuchan solo en
+  localhost con la configuración por defecto de la distro, y Mailpit queda fijado a
+  `127.0.0.1`. Puedes comprobarlo:
+
+  ```bash
+  sudo ss -tlnp | grep -E ':(80|443|3306|5432|6379|8025|1025)\b'
+  ```
+
+  Cada línea debe mostrar `127.0.0.1` (o `::1`), nunca `0.0.0.0` ni `*`.
+- **Redis y Mailpit no tienen autenticación.** Es seguro mientras solo escuchen en localhost.
+- **La llave SSH se genera sin passphrase.** Si quieres una: `ssh-keygen -p -f ~/.ssh/id_ed25519`.
+- **Nunca subas `credenciales-dev.txt`** ni una copia del script con tu correo personal
+  escrito en `GIT_EMAIL`.
+
+---
+
+## Volver a ejecutar el script
+
+Se puede volver a correr: apt salta lo ya instalado y los repos se reescriben igual.
+Pero ten presente:
+
+- Con `MARIADB_DEV_PASSWORD="auto"` y `POSTGRES_PASSWORD="auto"` **las contraseñas se
+  regeneran** en cada ejecución, y los `.env` que ya hayas configurado dejan de funcionar.
+  Para que no cambien, fija una contraseña en esas variables.
+- `~/credenciales-dev.txt` se vuelve a escribir desde cero: guarda una copia si la necesitas.
+- Si Oh My Bash ya está instalado, no se reinstala, pero el tema se vuelve a fijar a
+  `OMB_THEME`.
+
+---
+
+## Solución de problemas
+
+**El script falla o se detiene.** Todo queda registrado en `/var/log/dev-setup/`. Para un
+*issue*, adjunta las últimas líneas:
+
+```bash
+tail -n 60 "$(ls -t /var/log/dev-setup/install-*.log | head -n1)"
+```
+
+**`apt update` da error con un repositorio de terceros.** Corre `sudo apt update` y mira
+cuál repo reporta `E:`. Si es un PPA de `ondrej` que no soporta tu versión de Ubuntu, el
+script lo elimina solo al empezar.
+
+**Nginx no arranca: el puerto 80 está ocupado.** Probablemente Apache:
+
+```bash
+sudo systemctl disable --now apache2
+```
+
+**El prompt muestra cuadritos o símbolos raros.** Cierra la terminal y ábrela de nuevo.
+El tema usa los símbolos Powerline y emojis estándar; no necesita una Nerd Font. Si el
+problema sigue, revisa que tu terminal no tenga una fuente fija sin esos símbolos.
+
+**El navegador no confía en `https://miapp.test`.** Ejecuta `mkcert -install` como tu
+usuario (sin `sudo`) y reinicia el navegador. Un navegador instalado como snap o flatpak
+puede no leer el almacén de certificados normal del sistema.
+
+**`pip install` dice `externally-managed-environment`.** Es PEP 668 y es intencional.
+Usa `uv` o un entorno virtual (ver [Python](#python)).
+
+---
+
+## Desinstalar
+
+```bash
+~/desinstalar-entorno.sh
+```
+
+Pide que escribas `BORRAR` para confirmar. **Borra tus bases de datos** (`/var/lib/mysql`,
+`/var/lib/postgresql`) y los paquetes de Nginx, PHP, MariaDB, PostgreSQL, Redis, Node.js,
+DBeaver y VS Code, además de los repositorios que el script agregó.
+
+**No toca:** tus proyectos, Oh My Bash (para quitarlo, en una terminal nueva ejecuta
+`uninstall_oh_my_bash`), tu configuración de Git, tu llave SSH, las líneas de `PATH` en
+`.bashrc`, `uv`/`pipx`, las herramientas CLI ni la CA de mkcert (`mkcert -uninstall`).
