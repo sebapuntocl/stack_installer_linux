@@ -1,74 +1,70 @@
 #!/usr/bin/env bash
 # ============================================================
-# Entorno de Desarrollo â Debian 13 / Ubuntu 22.04+ (y derivadas)  Â· v3
-# Nginx + PHP 8.5 + MariaDB + PostgreSQL 18 + Node 24 + Python
-# Redis Â· Mailpit Â· DBeaver Â· mkcert (HTTPS local) Â· Oh My Bash
-# Uso: sudo bash install-dev-debian13.sh
+# Entorno de Desarrollo con Docker — Debian 13 / Ubuntu 24.04+ (y derivadas) · v4
+#
+# Opción 1 (TODO)
+#   Docker + Nginx, PHP-FPM, MariaDB, PostgreSQL, Redis y Mailpit en contenedores.
+#   Composer, Node y Python también corren en contenedores, con wrappers
+#   (php, composer, node, npm, python, uv...) para usarlos como siempre.
+#   Más: mkcert (HTTPS local), DBeaver, VS Code, Git + SSH, Oh My Bash, herramientas CLI.
+#
+# Opción 2 (BÁSICO)
+#   Solo Git global + llave SSH, Oh My Bash y herramientas CLI. Sin Docker.
+#
+# Uso: sudo bash install-dev.sh
 # ============================================================
 
 set -euo pipefail
 
 # ============================================================
-# CONFIGURACIÃN
+# CONFIGURACIÓN
 # ============================================================
 
+# --- GIT (déjalo vacío para no configurar Git ni crear llave SSH) ---
 GIT_NAME=""
-GIT_EMAIL=""                      # tambiÃ©n se usa para la llave SSH
+GIT_EMAIL=""                      # también se usa como comentario de la llave SSH
 GIT_EDITOR="nano"                 # nano | vim | code
 
-PHP_MAIN="8.5"                    # versiÃ³n de PHP a instalar
-WEB_ROOT_REL="proyectos/php"
+# --- CARPETAS (relativas a tu home) ---
+PROJECTS_DIR_REL="proyectos"      # se monta con la MISMA ruta dentro de los contenedores
+STACK_DIR_REL="dev-stack"         # docker-compose, Dockerfiles y configuración
 TIMEZONE="America/Santiago"
 
-MARIADB_DEV_USER="dev"
-MARIADB_DEV_PASSWORD="auto"
-POSTGRES_PASSWORD="auto"
+# --- VERSIONES (en contenedores) ---
+PHP_VERSION="8.5"
+NODE_MAJOR="24"
+PYTHON_VERSION="3.13"
 
-NODE_MAJOR="24"                   # 22 | 24
-PG_VERSION="18"
+# --- IMÁGENES DE LOS SERVICIOS ---
+IMG_NGINX="nginx:stable-alpine"
+IMG_MARIADB="mariadb:11.8"
+IMG_POSTGRES="postgres:18"
+IMG_REDIS="redis:8-alpine"
+IMG_MAILPIT="axllent/mailpit:latest"
 
-INSTALL_XDEBUG="s"
-CACHE_ENGINE="redis"              # redis | valkey
-INSTALL_VSCODE="s"                # s | n
+# --- BASES DE DATOS ---
+# "auto" genera contraseñas aleatorias. Si ya existen en ~/dev-stack/.env se conservan
+# (las bases solo aplican la contraseña al crearse). Solo letras, números y . _ @ % + = : , -
+DB_USER="dev"                     # usuario de MariaDB y de PostgreSQL
+DB_PASSWORD="auto"
+MARIADB_ROOT_PASSWORD="auto"
 
+# --- OTROS ---
+INSTALL_XDEBUG="s"                # s | n
+INSTALL_VSCODE="s"                # s | n  (solo con entorno gráfico)
 OMB_THEME="powerline-icon"        # tema de Oh My Bash (ver ~/.oh-my-bash/themes)
 
 # ============================================================
-# FIN CONFIGURACIÃN
+# FIN CONFIGURACIÓN
 # ============================================================
 
-[ "$EUID" -ne 0 ] && { echo "Ejecuta con sudo: sudo bash $0"; exit 1; }
-[ -z "${SUDO_USER:-}" ] && { echo "Ejecuta con sudo desde tu usuario normal, no como root."; exit 1; }
+declare -a INSTALLED=()
+declare -a FAILED=()
+declare -a DC=()                  # comando de compose: (docker compose) o (docker-compose)
 
-USER_NAME="$SUDO_USER"
-USER_HOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
-USER_GROUP=$(id -gn "$USER_NAME")
-WEB_ROOT="$USER_HOME/$WEB_ROOT_REL"
-CERT_DIR="/etc/nginx/certs"
-
-# --- DetecciÃ³n de distro: Debian, Ubuntu y derivadas (Mint, Pop!_OS, Zorin...) ---
-OS_ID=$(. /etc/os-release && echo "$ID")
-OS_LIKE=$(. /etc/os-release && echo "${ID_LIKE:-}")
-OS_PRETTY=$(. /etc/os-release && echo "${PRETTY_NAME:-$ID}")
-# En derivadas de Ubuntu, UBUNTU_CODENAME trae el codename base (noble, etc.)
-CODENAME=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")
-# Ubuntu primero: su ID_LIKE es "debian", asÃ­ que el orden importa.
-case " ${OS_ID} ${OS_LIKE} " in
-    *" ubuntu "*) DISTRO="ubuntu" ;;
-    *" debian "*) DISTRO="debian" ;;
-    *) echo "Distro no soportada: $OS_PRETTY (solo Debian/Ubuntu y derivadas)"; exit 1 ;;
-esac
-[ -z "$CODENAME" ] && { echo "No pude detectar el codename de tu distro."; exit 1; }
-ARCH=$(dpkg --print-architecture)
-
-export DEBIAN_FRONTEND=noninteractive
-
-LOG_DIR="/var/log/dev-setup"; mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-CREDENTIALS_FILE="$USER_HOME/credenciales-dev.txt"
-
+# ------------------------------------------------------------
+# UTILIDADES
+# ------------------------------------------------------------
 log()       { echo -e "\e[1;32m[OK]\e[0m $1"; }
 log_warn()  { echo -e "\e[1;33m[!]\e[0m  $1"; }
 log_error() { echo -e "\e[1;31m[X]\e[0m  $1"; }
@@ -81,30 +77,26 @@ save_credential() {
     chown "$USER_NAME":"$USER_GROUP" "$CREDENTIALS_FILE"
 }
 
-backup_config() { [ -f "$1" ] && cp -n "$1" "${1}.backup-$(date +%Y%m%d)" || true; }
-gen_password()  { openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20; }
+gen_password() { openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-20; }
 
 add_bashrc_line() {
     grep -qF "$1" "$USER_HOME/.bashrc" 2>/dev/null || echo "$1" >> "$USER_HOME/.bashrc"
 }
 
-declare -a INSTALLED=()
-declare -a FAILED=()
-
 verify_service() {
     if systemctl is-active --quiet "$1"; then
         log "$1 corriendo"; INSTALLED+=("$1")
     else
-        log_warn "$1 no estÃ¡ activo â revisa: systemctl status $1"; FAILED+=("$1")
+        log_warn "$1 no está activo — revisa: systemctl status $1"; FAILED+=("$1")
     fi
 }
 
-# Â¿Responde esta URL (200)? Sirve para saber si un repo publica para tu versiÃ³n.
+# ¿Responde esta URL (200)? Sirve para saber si un repo publica para tu versión.
 url_ok() { curl -fsS -o /dev/null --max-time 20 "$1" 2>/dev/null; }
 
-# Â¿Existe el paquete en los repos configurados?
-# LC_ALL=C es OBLIGATORIO: apt traduce su salida ("Candidate:" â "Candidato:" en
-# espaÃ±ol). Sin esto, en un sistema que no estÃ© en inglÃ©s la funciÃ³n respondÃ­a
+# ¿Existe el paquete en los repos configurados?
+# LC_ALL=C es OBLIGATORIO: apt traduce su salida ("Candidate:" → "Candidato:" en
+# español). Sin esto, en un sistema que no esté en inglés la función respondía
 # "no existe" para TODO paquete.
 pkg_exists() {
     local cand
@@ -113,15 +105,13 @@ pkg_exists() {
 }
 
 # Instala solo los paquetes que existen y avisa de los que no.
-# Necesario porque las versiones nuevas de PHP no siempre traen todas
-# las extensiones empaquetadas con el mismo nombre.
 apt_install_available() {
     local have=() missing=() p
     for p in "$@"; do
         if pkg_exists "$p"; then have+=("$p"); else missing+=("$p"); fi
     done
-    [ ${#have[@]}    -gt 0 ] && apt-get install -y "${have[@]}"
-    [ ${#missing[@]} -gt 0 ] && log_warn "No existen en el repo (se omiten): ${missing[*]}"
+    if [ ${#have[@]} -gt 0 ]; then apt-get install -y "${have[@]}"; fi
+    if [ ${#missing[@]} -gt 0 ]; then log_warn "No existen en el repo (se omiten): ${missing[*]}"; fi
     return 0
 }
 
@@ -140,7 +130,7 @@ EOF
 }
 
 has_desktop() {
-    # Sin pipes a propÃ³sito: con "set -o pipefail", "cmd | grep -q" puede dar
+    # Sin pipes a propósito: con "set -o pipefail", "cmd | grep -q" puede dar
     # falso aunque haya coincidencia (SIGPIPE). Y GNOME reciente es solo Wayland.
     [ "$(systemctl get-default 2>/dev/null)" = "graphical.target" ] && return 0
     compgen -G "/usr/share/xsessions/*.desktop" >/dev/null && return 0
@@ -149,88 +139,133 @@ has_desktop() {
 }
 
 # ------------------------------------------------------------
-# MENÃ
+# CONTEXTO: root, usuario, distro, log, credenciales, menú
 # ------------------------------------------------------------
-clear
-cat <<BANNER
+require_root() {
+    if [ "$EUID" -ne 0 ]; then echo "Ejecuta con sudo: sudo bash $0"; exit 1; fi
+    if [ -z "${SUDO_USER:-}" ]; then echo "Ejecuta con sudo desde tu usuario normal, no como root."; exit 1; fi
+    return 0
+}
+
+# Debian, Ubuntu y derivadas (Mint, Pop!_OS, Zorin...)
+detect_distro() {
+    OS_ID=$(. /etc/os-release && echo "$ID")
+    OS_LIKE=$(. /etc/os-release && echo "${ID_LIKE:-}")
+    OS_PRETTY=$(. /etc/os-release && echo "${PRETTY_NAME:-$ID}")
+    # En derivadas de Ubuntu, UBUNTU_CODENAME trae el codename base (noble, etc.)
+    CODENAME=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")
+    # Ubuntu primero: su ID_LIKE es "debian", así que el orden importa.
+    case " ${OS_ID} ${OS_LIKE} " in
+        *" ubuntu "*) DISTRO="ubuntu" ;;
+        *" debian "*) DISTRO="debian" ;;
+        *) echo "Distro no soportada: $OS_PRETTY (solo Debian/Ubuntu y derivadas)"; exit 1 ;;
+    esac
+    if [ -z "$CODENAME" ]; then echo "No pude detectar el codename de tu distro."; exit 1; fi
+}
+
+init_context() {
+    USER_NAME="$SUDO_USER"
+    USER_HOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
+    USER_GROUP=$(id -gn "$USER_NAME")
+    DEV_UID=$(id -u "$USER_NAME")
+    DEV_GID=$(id -g "$USER_NAME")
+    PROJECTS_DIR="$USER_HOME/$PROJECTS_DIR_REL"
+    STACK_DIR="$USER_HOME/$STACK_DIR_REL"
+    CREDENTIALS_FILE="$USER_HOME/credenciales-dev.txt"
+
+    # Estas rutas terminan en archivos .env y en volúmenes de Docker: nada de espacios ni rarezas.
+    if ! [[ "$PROJECTS_DIR$STACK_DIR" =~ ^[A-Za-z0-9._/@+-]+$ ]]; then
+        echo "Las rutas $PROJECTS_DIR y $STACK_DIR tienen caracteres no permitidos (espacios, acentos...)."
+        echo "Ajusta PROJECTS_DIR_REL / STACK_DIR_REL en la configuración."
+        exit 1
+    fi
+
+    detect_distro
+    ARCH=$(dpkg --print-architecture)
+    export DEBIAN_FRONTEND=noninteractive
+}
+
+setup_logging() {
+    LOG_DIR="/var/log/dev-setup"; mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
+    exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
+init_credentials() {
+    # Cada ejecución reescribe el archivo; guardamos el anterior por si tenía algo que necesites.
+    if [ -f "$CREDENTIALS_FILE" ]; then cp -a "$CREDENTIALS_FILE" "${CREDENTIALS_FILE}.anterior"; fi
+    {
+        echo "========================================"
+        echo "CREDENCIALES — ENTORNO DE DESARROLLO"
+        echo "Generado: $(date)"
+        echo "$OS_PRETTY ($CODENAME) — $(hostname)"
+        echo "========================================"
+    } > "$CREDENTIALS_FILE"
+    chown "$USER_NAME":"$USER_GROUP" "$CREDENTIALS_FILE"; chmod 600 "$CREDENTIALS_FILE"
+}
+
+choose_mode() {
+    clear 2>/dev/null || true
+    cat <<BANNER
 ==================================================
-  ENTORNO DEV â $OS_PRETTY Â· $ARCH
+  ENTORNO DEV — $OS_PRETTY · $ARCH
   Usuario: $USER_NAME
 ==================================================
-  PHP $PHP_MAIN Â· Node $NODE_MAJOR Â· PostgreSQL $PG_VERSION
-  MariaDB (repo de tu distro) Â· Python + uv Â· $CACHE_ENGINE
-  Mailpit Â· DBeaver Â· mkcert (HTTPS) Â· Oh My Bash ($OMB_THEME)
-==================================================
 1) TODO
-2) PERSONALIZADO
+     Docker + Nginx, PHP $PHP_VERSION, MariaDB, PostgreSQL, Redis y Mailpit
+     (Composer, Node $NODE_MAJOR y Python $PYTHON_VERSION también en contenedores)
+     + mkcert (HTTPS local), DBeaver, VS Code
+     + Git y llave SSH, Oh My Bash ($OMB_THEME), herramientas CLI
+2) BÁSICO
+     Solo Git global + llave SSH, Oh My Bash y herramientas CLI (sin Docker)
+==================================================
 BANNER
-read -rp "OpciÃ³n [1-2]: " MODO
-
-case "$MODO" in
-    1) INS_WEB=s; INS_MARIA=s; INS_POSTGRES=s; INS_NODE=s; INS_PYTHON=s
-       INS_CACHE=s; INS_MAILPIT=s; INS_DBEAVER=s; INS_TOOLS=s; INS_OMB=s; INS_GIT=s ;;
-    2)
-        read -rp "â¢ Nginx + PHP-FPM $PHP_MAIN?      [s/n]: " INS_WEB
-        read -rp "â¢ MariaDB?                        [s/n]: " INS_MARIA
-        read -rp "â¢ PostgreSQL $PG_VERSION?         [s/n]: " INS_POSTGRES
-        read -rp "â¢ Node.js $NODE_MAJOR?            [s/n]: " INS_NODE
-        read -rp "â¢ Toolchain Python?               [s/n]: " INS_PYTHON
-        read -rp "â¢ $CACHE_ENGINE (cachÃ©/colas)?    [s/n]: " INS_CACHE
-        read -rp "â¢ Mailpit (captura de correos)?   [s/n]: " INS_MAILPIT
-        read -rp "â¢ DBeaver (GUI de bases)?         [s/n]: " INS_DBEAVER
-        read -rp "â¢ Herramientas CLI (rg, fd, bat)? [s/n]: " INS_TOOLS
-        read -rp "â¢ Oh My Bash ($OMB_THEME)?  [s/n]: " INS_OMB
-        read -rp "â¢ Git global + llave SSH?         [s/n]: " INS_GIT
-        ;;
-    *) log_error "OpciÃ³n invÃ¡lida"; exit 1 ;;
-esac
-
-{
-    echo "========================================"
-    echo "CREDENCIALES â ENTORNO DE DESARROLLO"
-    echo "Generado: $(date)"
-    echo "$OS_PRETTY ($CODENAME) â $(hostname)"
-    echo "========================================"
-} > "$CREDENTIALS_FILE"
-chown "$USER_NAME":"$USER_GROUP" "$CREDENTIALS_FILE"; chmod 600 "$CREDENTIALS_FILE"
+    read -rp "Opción [1-2]: " MODO
+    case "$MODO" in
+        1) MODE="full" ;;
+        2) MODE="basic" ;;
+        *) log_error "Opción inválida"; exit 1 ;;
+    esac
+}
 
 # ------------------------------------------------------------
-# BASE
+# BASE DEL SISTEMA (ambas opciones)
 # ------------------------------------------------------------
-# Si una corrida anterior dejÃ³ el PPA de ondrej en una versiÃ³n de Ubuntu que ya no
-# lo soporta (26.04+), "apt-get update" falla con 404. Lo quitamos antes de actualizar.
-if [ "$DISTRO" = "ubuntu" ] && compgen -G "/etc/apt/sources.list.d/ondrej-ubuntu-php*" >/dev/null; then
-    if ! url_ok "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/${CODENAME}/InRelease"; then
-        log_warn "El PPA ondrej/php no soporta ${CODENAME} â lo elimino"
-        rm -f /etc/apt/sources.list.d/ondrej-ubuntu-php* \
-              /etc/apt/keyrings/ondrej-ubuntu-php* /etc/apt/trusted.gpg.d/ondrej-ubuntu-php*
+setup_base() {
+    # Si una corrida anterior dejó el PPA de ondrej en una versión de Ubuntu que ya no
+    # lo soporta (26.04+), "apt-get update" falla con 404. Lo quitamos antes de actualizar.
+    if [ "$DISTRO" = "ubuntu" ] && compgen -G "/etc/apt/sources.list.d/ondrej-ubuntu-php*" >/dev/null; then
+        if ! url_ok "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/${CODENAME}/InRelease"; then
+            log_warn "El PPA ondrej/php no soporta ${CODENAME} — lo elimino"
+            rm -f /etc/apt/sources.list.d/ondrej-ubuntu-php* \
+                  /etc/apt/keyrings/ondrej-ubuntu-php* /etc/apt/trusted.gpg.d/ondrej-ubuntu-php*
+        fi
     fi
-fi
 
-log "Actualizando sistema..."
-apt-get update || log_warn "apt update reportÃ³ errores (Â¿algÃºn repo de terceros caÃ­do?) â continÃºo"
-apt-get upgrade -y
+    log "Actualizando sistema..."
+    apt-get update || log_warn "apt update reportó errores (¿algún repo de terceros caído?) — continúo"
+    apt-get upgrade -y
 
-log "Instalando utilidades base..."
-apt-get install -y curl wget git unzip zip jq tree build-essential \
-    ca-certificates gnupg lsb-release openssl apt-transport-https acl
+    log "Instalando utilidades base..."
+    apt-get install -y curl git ca-certificates gnupg openssl openssh-client
+}
 
 # ------------------------------------------------------------
 # OH MY BASH + tema powerline-icon
 # IMPORTANTE: va ANTES de cualquier add_bashrc_line. El instalador de
 # Oh My Bash respalda ~/.bashrc y lo REEMPLAZA por su plantilla; si
-# escribiÃ©ramos el PATH antes, esas lÃ­neas se perderÃ­an.
+# escribiéramos el PATH antes, esas líneas se perderían.
 # ------------------------------------------------------------
-if [[ "$INS_OMB" =~ ^[Ss]$ ]]; then
-    OMB_DIR="$USER_HOME/.oh-my-bash"
+setup_omb() {
+    local OMB_DIR="$USER_HOME/.oh-my-bash"
 
     if has_desktop; then
-        log "Instalando fuentes para el prompt (sÃ­mbolos Powerline + emojis)..."
+        log "Instalando fuentes para el prompt (símbolos Powerline + emojis)..."
         apt_install_available fonts-powerline fonts-noto-color-emoji
     fi
 
     if [ -d "$OMB_DIR" ]; then
-        log_warn "Oh My Bash ya estaba instalado â solo reviso el tema"
+        log_warn "Oh My Bash ya estaba instalado — solo reviso el tema"
     else
         log "Instalando Oh My Bash..."
         if curl -fsSL https://raw.githubusercontent.com/ohmybash/oh-my-bash/master/tools/install.sh \
@@ -238,7 +273,7 @@ if [[ "$INS_OMB" =~ ^[Ss]$ ]]; then
             chmod 644 /tmp/omb-install.sh
             # --unattended: sin esto el instalador hace "exec bash" y el script se cuelga
             ( cd "$USER_HOME" && as_user bash /tmp/omb-install.sh --unattended ) \
-                || { log_error "FallÃ³ el instalador de Oh My Bash"; FAILED+=("oh-my-bash"); }
+                || { log_error "Falló el instalador de Oh My Bash"; FAILED+=("oh-my-bash"); }
             rm -f /tmp/omb-install.sh
         else
             log_error "No pude descargar el instalador de Oh My Bash"
@@ -255,554 +290,31 @@ if [[ "$INS_OMB" =~ ^[Ss]$ ]]; then
         save_credential "OH MY BASH (tema ${OMB_THEME})"
         save_credential "  Abre una terminal NUEVA para verlo."
         save_credential "  Cambiar tema: edita OSH_THEME en ~/.bashrc (temas en ~/.oh-my-bash/themes)"
-        save_credential "  Tu .bashrc anterior quedÃ³ respaldado en ~/.bashrc.omb-backup-*"
-        save_credential "  Si ves cuadritos o sÃ­mbolos raros: cierra y reabre la terminal."
+        save_credential "  Tu .bashrc anterior quedó respaldado en ~/.bashrc.omb-backup-*"
+        save_credential "  Si ves cuadritos o símbolos raros: cierra y reabre la terminal."
         save_credential "  Desinstalar: uninstall_oh_my_bash"
     else
-        log_warn "No pude fijar el tema '${OMB_THEME}' (Â¿existe en ~/.oh-my-bash/themes?)"
+        log_warn "No pude fijar el tema '${OMB_THEME}' (¿existe en ~/.oh-my-bash/themes?)"
         FAILED+=("oh-my-bash-theme")
     fi
-fi
-
-add_bashrc_line 'export PATH="$HOME/.local/bin:$PATH"'
-
-# ------------------------------------------------------------
-# mkcert â CA local para HTTPS en .test
-# ------------------------------------------------------------
-log "Instalando mkcert (certificados locales de confianza)..."
-if apt-get install -y mkcert libnss3-tools 2>/dev/null; then
-    as_user mkcert -install >/dev/null 2>&1 || log_warn "mkcert -install fallÃ³ (Â¿sin navegador aÃºn?). Corre 'mkcert -install' despuÃ©s."
-    mkdir -p "$CERT_DIR"; chmod 755 "$CERT_DIR"
-    MKCERT_OK=1
-    log "mkcert listo â los sitios .test tendrÃ¡n HTTPS vÃ¡lido"
-else
-    MKCERT_OK=0
-    log_warn "mkcert no disponible en los repos â los sitios quedarÃ¡n solo en HTTP"
-fi
-
-# ------------------------------------------------------------
-# NGINX + PHP-FPM
-# ------------------------------------------------------------
-if [[ "$INS_WEB" =~ ^[Ss]$ ]]; then
-    log "Instalando Nginx..."
-    apt-get install -y nginx
-
-    # Orden de preferencia para conseguir PHP ${PHP_MAIN}:
-    #  1) Los repos que ya tienes, si traen esa versiÃ³n (Ubuntu 26.04 trae PHP 8.5
-    #     de fÃ¡brica â cero repos externos, cero cosas que se puedan romper).
-    #  2) Debian: repo de Sury (packages.sury.org).
-    #  3) Ubuntu: PPA de OndÅej (22.04/24.04) o, si el PPA no soporta tu versiÃ³n,
-    #     packages.sury.org (su canal nuevo).
-    if pkg_exists "php${PHP_MAIN}-fpm"; then
-        log "PHP ${PHP_MAIN} ya estÃ¡ disponible en tus repos â no agrego repo externo"
-    elif [ "$DISTRO" = "debian" ]; then
-        log "AÃ±adiendo repositorio Sury (PHP para Debian $CODENAME)..."
-        add_repo "sury-php" "https://packages.sury.org/php/apt.gpg" \
-                 "https://packages.sury.org/php/" "$CODENAME" "main"
-        apt-get update
-    elif url_ok "https://ppa.launchpadcontent.net/ondrej/php/ubuntu/dists/${CODENAME}/InRelease"; then
-        log "AÃ±adiendo PPA ondrej/php (PHP para Ubuntu $CODENAME)..."
-        apt-get install -y software-properties-common
-        LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
-        apt-get update
-    elif url_ok "https://packages.sury.org/php/dists/${CODENAME}/InRelease"; then
-        log "El PPA no soporta $CODENAME â uso packages.sury.org"
-        add_repo "sury-php" "https://packages.sury.org/php/apt.gpg" \
-                 "https://packages.sury.org/php/" "$CODENAME" "main"
-        apt-get update
-    else
-        log_warn "No encontrÃ© un repo externo con PHP para $CODENAME â pruebo con los de tu distro"
-    fi
-
-    PHP_VERSIONS=("$PHP_MAIN")
-
-    for V in "${PHP_VERSIONS[@]}"; do
-        log "Instalando PHP $V (nÃºcleo)..."
-        # Estos SÃ o SÃ tienen que existir. Si fallan, no hay PHP.
-        if ! pkg_exists "php${V}-fpm"; then
-            log_error "php${V}-fpm no existe en el repo de PHP para $OS_PRETTY ($CODENAME)."
-            log_error "Versiones disponibles: $(apt-cache search --names-only '^php[0-9]\.[0-9]+-fpm$' | awk '{print $1}' | tr '\n' ' ')"
-            exit 1
-        fi
-        apt-get install -y "php${V}-fpm" "php${V}-cli" "php${V}-common"
-
-        log "Instalando extensiones de PHP $V..."
-        # opcache, redis, imagick y otras pueden venir integradas o no estar
-        # empaquetadas aÃºn segÃºn la versiÃ³n: se instalan solo si existen.
-        apt_install_available \
-            "php${V}-opcache"  "php${V}-mysql"   "php${V}-pgsql"  "php${V}-sqlite3" \
-            "php${V}-mbstring" "php${V}-xml"     "php${V}-curl"   "php${V}-zip" \
-            "php${V}-gd"       "php${V}-intl"    "php${V}-bcmath" "php${V}-readline" \
-            "php${V}-redis"    "php${V}-imagick"
-
-        # Comprobar que las extensiones crÃ­ticas quedaron cargadas
-        for EXT in pdo_mysql pgsql mbstring curl; do
-            "php${V}" -m 2>/dev/null | grep -qi "^${EXT}$" \
-                || log_warn "PHP $V: la extensiÃ³n '${EXT}' no quedÃ³ cargada"
-        done
-        "php${V}" -m 2>/dev/null | grep -qi 'Zend OPcache\|opcache' \
-            && log "PHP $V: OPcache activo" \
-            || log_warn "PHP $V: OPcache no estÃ¡ cargado"
-
-        for SAPI in fpm cli; do
-            INI="/etc/php/${V}/${SAPI}/php.ini"
-            [ -f "$INI" ] || continue
-            backup_config "$INI"
-            sed -i "s|^;*\s*date.timezone\s*=.*|date.timezone = ${TIMEZONE}|"     "$INI"
-            sed -i "s|^;*\s*memory_limit\s*=.*|memory_limit = 512M|"              "$INI"
-            sed -i "s|^;*\s*upload_max_filesize\s*=.*|upload_max_filesize = 64M|" "$INI"
-            sed -i "s|^;*\s*post_max_size\s*=.*|post_max_size = 64M|"             "$INI"
-            sed -i "s|^;*\s*max_execution_time\s*=.*|max_execution_time = 300|"   "$INI"
-        done
-
-        # Pool FPM con TU usuario â sin peleas de permisos en storage/, cache/
-        POOL="/etc/php/${V}/fpm/pool.d/www.conf"
-        backup_config "$POOL"
-        sed -i "s|^user\s*=.*|user = ${USER_NAME}|"             "$POOL"
-        sed -i "s|^group\s*=.*|group = ${USER_GROUP}|"          "$POOL"
-        sed -i "s|^listen.owner\s*=.*|listen.owner = www-data|" "$POOL"
-        sed -i "s|^listen.group\s*=.*|listen.group = www-data|" "$POOL"
-        grep -q '^listen.mode' "$POOL" || echo "listen.mode = 0660" >> "$POOL"
-
-        if [[ "$INSTALL_XDEBUG" =~ ^[Ss]$ ]]; then
-            apt-get install -y "php${V}-xdebug" 2>/dev/null || log_warn "Xdebug no disponible para PHP $V"
-            XINI="/etc/php/${V}/mods-available/xdebug.ini"
-            if [ -f "$XINI" ] && ! grep -q 'xdebug.mode' "$XINI"; then
-                cat >> "$XINI" <<'XDEBUG'
-xdebug.mode = develop,debug
-xdebug.start_with_request = trigger
-xdebug.client_host = 127.0.0.1
-xdebug.client_port = 9003
-XDEBUG
-            fi
-        fi
-
-        systemctl enable --now "php${V}-fpm"
-        systemctl restart "php${V}-fpm"
-        verify_service "php${V}-fpm"
-    done
-
-    mkdir -p "$WEB_ROOT"
-    chown -R "$USER_NAME":"$USER_GROUP" "$WEB_ROOT"
-    chmod 755 "$USER_HOME" "$WEB_ROOT"
-
-    PHP_SOCK="/run/php/php${PHP_MAIN}-fpm.sock"
-    cat > /etc/nginx/sites-available/dev-default.conf <<EOF
-server {
-    listen 80 default_server;
-    server_name localhost;
-    root ${WEB_ROOT};
-    index index.php index.html;
-    autoindex on;
-
-    location / { try_files \$uri \$uri/ =404; }
-    location ~ \.php\$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:${PHP_SOCK};
-    }
-    location ~ /\.(?!well-known) { deny all; }
 }
-EOF
-    ln -sf /etc/nginx/sites-available/dev-default.conf /etc/nginx/sites-enabled/dev-default.conf
-    rm -f /etc/nginx/sites-enabled/default
 
-    nginx -t
-    systemctl enable --now nginx
-    systemctl reload nginx
-    verify_service nginx
-
-    # --- Composer con verificaciÃ³n de firma ---
-    log "Instalando Composer..."
-    EXPECTED=$(curl -fsSL https://composer.github.io/installer.sig)
-    curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php
-    ACTUAL=$(php -r "echo hash_file('sha384','/tmp/composer-setup.php');")
-    if [ "$EXPECTED" != "$ACTUAL" ]; then
-        log_error "Hash de Composer NO coincide. InstalaciÃ³n abortada por seguridad."
-    else
-        php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer --quiet
-        log "Composer $(composer --version 2>/dev/null | awk '{print $3}') instalado"
-        add_bashrc_line 'export PATH="$HOME/.config/composer/vendor/bin:$PATH"'
-        as_user composer global require laravel/installer --quiet 2>/dev/null \
-            || log_warn "No se pudo instalar el laravel/installer global (puedes hacerlo despuÃ©s)"
-    fi
-    rm -f /tmp/composer-setup.php
-
-    # --- Config compartida para el comando newsite ---
-    cat > /etc/dev-env.conf <<EOF
-DEV_USER="${USER_NAME}"
-DEV_GROUP="${USER_GROUP}"
-DEV_WEB_ROOT="${WEB_ROOT}"
-DEV_PHP_DEFAULT="${PHP_MAIN}"
-DEV_CERT_DIR="${CERT_DIR}"
-DEV_MKCERT="${MKCERT_OK}"
-EOF
-
-    cat > /usr/local/bin/newsite <<'NEWSITE'
-#!/usr/bin/env bash
-# newsite <nombre>  â crea http(s)://<nombre>.test
-set -euo pipefail
-[ "$EUID" -ne 0 ] && { echo "Usa: sudo newsite <nombre>"; exit 1; }
-source /etc/dev-env.conf
-
-NAME="${1:?Uso: sudo newsite <nombre>}"
-PHPV="$DEV_PHP_DEFAULT"
-ROOT="$DEV_WEB_ROOT/$NAME"
-DOCROOT="$ROOT/public"; [ -d "$DOCROOT" ] || DOCROOT="$ROOT"
-mkdir -p "$DOCROOT"; chown -R "$DEV_USER":"$DEV_GROUP" "$ROOT"
-
-SSL_BLOCK=""
-SCHEME="http"
-if [ "$DEV_MKCERT" = "1" ]; then
-    mkdir -p "$DEV_CERT_DIR"
-    if [ ! -f "$DEV_CERT_DIR/$NAME.test.pem" ]; then
-        sudo -u "$DEV_USER" -H mkcert -cert-file "/tmp/$NAME.pem" -key-file "/tmp/$NAME-key.pem" \
-            "$NAME.test" "*.$NAME.test" >/dev/null 2>&1
-        mv "/tmp/$NAME.pem"     "$DEV_CERT_DIR/$NAME.test.pem"
-        mv "/tmp/$NAME-key.pem" "$DEV_CERT_DIR/$NAME.test-key.pem"
-        chmod 644 "$DEV_CERT_DIR/$NAME.test.pem"
-        chmod 640 "$DEV_CERT_DIR/$NAME.test-key.pem"
-        chgrp www-data "$DEV_CERT_DIR/$NAME.test-key.pem"
-    fi
-    # "http2 on;" solo existe desde nginx 1.25.1. Ubuntu 24.04 trae 1.24.
-    NGX_VER=$(nginx -v 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -n1)
-    if [ "$(printf '%s\n1.25.1\n' "$NGX_VER" | sort -V | head -n1)" = "1.25.1" ]; then
-        LISTEN_SSL="    listen 443 ssl;
-    http2 on;"
-    else
-        LISTEN_SSL="    listen 443 ssl http2;"
-    fi
-    SSL_BLOCK="$LISTEN_SSL
-    ssl_certificate     $DEV_CERT_DIR/$NAME.test.pem;
-    ssl_certificate_key $DEV_CERT_DIR/$NAME.test-key.pem;"
-    SCHEME="https"
-fi
-
-cat > "/etc/nginx/sites-available/$NAME.conf" <<CONF
-server {
-    listen 80;
-$SSL_BLOCK
-    server_name $NAME.test *.$NAME.test;
-    root $DOCROOT;
-    index index.php index.html;
-
-    client_max_body_size 64M;
-
-    location / { try_files \$uri \$uri/ /index.php?\$query_string; }
-    location ~ \.php\$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php$PHPV-fpm.sock;
-        fastcgi_read_timeout 300;
-    }
-    location ~ /\.(?!well-known) { deny all; }
+setup_path() {
+    as_user mkdir -p "$USER_HOME/.local/bin"
+    add_bashrc_line 'export PATH="$HOME/.local/bin:$PATH"'
 }
-CONF
-
-ln -sf "/etc/nginx/sites-available/$NAME.conf" "/etc/nginx/sites-enabled/$NAME.conf"
-grep -q "[[:space:]]$NAME.test\$" /etc/hosts || echo "127.0.0.1   $NAME.test" >> /etc/hosts
-nginx -t && systemctl reload nginx
-echo "Listo â $SCHEME://$NAME.test"
-echo "  docroot: $DOCROOT   PHP: $PHPV"
-NEWSITE
-    chmod +x /usr/local/bin/newsite
-
-    cat > /usr/local/bin/delsite <<'DELSITE'
-#!/usr/bin/env bash
-# delsite <nombre> â borra el vhost (NO borra tus archivos)
-set -euo pipefail
-[ "$EUID" -ne 0 ] && { echo "Usa: sudo delsite <nombre>"; exit 1; }
-source /etc/dev-env.conf
-NAME="${1:?Uso: sudo delsite <nombre>}"
-rm -f "/etc/nginx/sites-enabled/$NAME.conf" "/etc/nginx/sites-available/$NAME.conf"
-rm -f "$DEV_CERT_DIR/$NAME.test.pem" "$DEV_CERT_DIR/$NAME.test-key.pem"
-sed -i "/[[:space:]]$NAME\.test\$/d" /etc/hosts
-nginx -t && systemctl reload nginx
-echo "Vhost $NAME eliminado. Los archivos en $DEV_WEB_ROOT/$NAME siguen ahÃ­."
-DELSITE
-    chmod +x /usr/local/bin/delsite
-
-    save_credential ""
-    save_credential "NGINX + PHP-FPM"
-    save_credential "  PHP: ${PHP_MAIN}"
-    save_credential "  Webroot: ${WEB_ROOT}   Â·   Ãndice: http://localhost"
-    save_credential "  Nuevo sitio:  sudo newsite miapp        -> https://miapp.test"
-    save_credential "  Borrar sitio: sudo delsite miapp"
-    save_credential "  Xdebug: modo trigger, puerto 9003 (XDEBUG_TRIGGER=1 php artisan ...)"
-fi
-
-# ------------------------------------------------------------
-# MARIADB
-# ------------------------------------------------------------
-if [[ "$INS_MARIA" =~ ^[Ss]$ ]]; then
-    log "Instalando MariaDB (versiÃ³n del repo de $OS_PRETTY)..."
-    apt-get install -y mariadb-server mariadb-client
-    systemctl enable --now mariadb
-    sleep 3
-
-    [ "$MARIADB_DEV_PASSWORD" = "auto" ] && MARIADB_DEV_PASSWORD=$(gen_password)
-
-    mariadb <<SQL
-CREATE USER IF NOT EXISTS '${MARIADB_DEV_USER}'@'localhost' IDENTIFIED BY '${MARIADB_DEV_PASSWORD}';
-ALTER  USER '${MARIADB_DEV_USER}'@'localhost' IDENTIFIED BY '${MARIADB_DEV_PASSWORD}';
-CREATE USER IF NOT EXISTS '${MARIADB_DEV_USER}'@'127.0.0.1' IDENTIFIED BY '${MARIADB_DEV_PASSWORD}';
-ALTER  USER '${MARIADB_DEV_USER}'@'127.0.0.1' IDENTIFIED BY '${MARIADB_DEV_PASSWORD}';
-GRANT ALL PRIVILEGES ON *.* TO '${MARIADB_DEV_USER}'@'localhost' WITH GRANT OPTION;
-GRANT ALL PRIVILEGES ON *.* TO '${MARIADB_DEV_USER}'@'127.0.0.1' WITH GRANT OPTION;
-CREATE USER IF NOT EXISTS '${USER_NAME}'@'localhost' IDENTIFIED VIA unix_socket;
-GRANT ALL PRIVILEGES ON *.* TO '${USER_NAME}'@'localhost' WITH GRANT OPTION;
-DELETE FROM mysql.global_priv WHERE User='';
-DROP DATABASE IF EXISTS test;
-FLUSH PRIVILEGES;
-SQL
-
-    verify_service mariadb
-
-    save_credential ""
-    save_credential "MARIADB $(mariadb --version | grep -oP '\d+\.\d+\.\d+' | head -n1)"
-    save_credential "  Acceso directo: mariadb          (tu usuario, unix_socket, sin password)"
-    save_credential "  Root:           sudo mariadb"
-    save_credential "  Usuario app:    ${MARIADB_DEV_USER}"
-    save_credential "  ContraseÃ±a:     ${MARIADB_DEV_PASSWORD}"
-    save_credential "  .env Laravel:   DB_HOST=127.0.0.1 DB_PORT=3306 DB_USERNAME=${MARIADB_DEV_USER}"
-fi
-
-# ------------------------------------------------------------
-# POSTGRESQL
-# ------------------------------------------------------------
-if [[ "$INS_POSTGRES" =~ ^[Ss]$ ]]; then
-    PG_PKG="postgresql-${PG_VERSION}"
-    if pkg_exists "$PG_PKG"; then
-        log "PostgreSQL ${PG_VERSION} ya estÃ¡ en tus repos â no agrego PGDG"
-    elif url_ok "https://apt.postgresql.org/pub/repos/apt/dists/${CODENAME}-pgdg/InRelease"; then
-        log "AÃ±adiendo repositorio PGDG..."
-        add_repo "pgdg" "https://www.postgresql.org/media/keys/ACCC4CF8.asc" \
-                 "https://apt.postgresql.org/pub/repos/apt" "${CODENAME}-pgdg" "main"
-        apt-get update
-    else
-        log_warn "PGDG no publica para ${CODENAME} y tu distro no trae PostgreSQL ${PG_VERSION} â instalo el 'postgresql' de tu distro"
-        PG_PKG="postgresql"
-    fi
-
-    log "Instalando ${PG_PKG}..."
-    # contrib ya viene dentro del paquete principal (postgresql-contrib-NN no existe)
-    apt-get install -y "$PG_PKG"
-    systemctl enable --now postgresql
-    sleep 3
-
-    [ "$POSTGRES_PASSWORD" = "auto" ] && POSTGRES_PASSWORD=$(gen_password)
-
-    sudo -u postgres psql -qc "ALTER USER postgres WITH PASSWORD '${POSTGRES_PASSWORD}';"
-    sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${USER_NAME}'" | grep -q 1 || \
-        sudo -u postgres psql -qc "CREATE ROLE ${USER_NAME} LOGIN SUPERUSER CREATEDB PASSWORD '${POSTGRES_PASSWORD}';"
-    sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${USER_NAME}'" | grep -q 1 || \
-        sudo -u postgres createdb -O "${USER_NAME}" "${USER_NAME}"
-
-    verify_service postgresql
-
-    save_credential ""
-    save_credential "POSTGRESQL $(psql --version 2>/dev/null | awk '{print $3}')"
-    save_credential "  Acceso directo: psql            (rol ${USER_NAME}, peer auth)"
-    save_credential "  Usuarios:       postgres / ${USER_NAME}"
-    save_credential "  ContraseÃ±a:     ${POSTGRES_PASSWORD}"
-    save_credential "  .env Laravel:   DB_HOST=127.0.0.1 DB_PORT=5432 DB_USERNAME=${USER_NAME}"
-fi
-
-# ------------------------------------------------------------
-# REDIS / VALKEY
-# ------------------------------------------------------------
-if [[ "$INS_CACHE" =~ ^[Ss]$ ]]; then
-    # Valkey no existe en todas las versiones (p.ej. Ubuntu 24.04): fallback a Redis
-    if [ "$CACHE_ENGINE" = "valkey" ] && ! pkg_exists valkey-server; then
-        log_warn "valkey no estÃ¡ en los repos de $OS_PRETTY â uso Redis"
-        CACHE_ENGINE="redis"
-    fi
-
-    if [ "$CACHE_ENGINE" = "valkey" ]; then
-        log "Instalando Valkey (fork libre de Redis)..."
-        apt-get install -y valkey-server valkey-tools
-        CACHE_SVC="valkey-server"; CACHE_CLI="valkey-cli"
-        CACHE_CONF="/etc/valkey/valkey.conf"
-    else
-        log "Instalando Redis..."
-        apt-get install -y redis-server redis-tools
-        CACHE_SVC="redis-server"; CACHE_CLI="redis-cli"
-        CACHE_CONF="/etc/redis/redis.conf"
-    fi
-
-    if [ -f "$CACHE_CONF" ]; then
-        backup_config "$CACHE_CONF"
-        # En una notebook no queremos que se coma la RAM
-        sed -i 's|^#*\s*maxmemory\s.*|maxmemory 512mb|'                          "$CACHE_CONF"
-        sed -i 's|^#*\s*maxmemory-policy\s.*|maxmemory-policy allkeys-lru|'      "$CACHE_CONF"
-        grep -q '^maxmemory '        "$CACHE_CONF" || echo "maxmemory 512mb"                >> "$CACHE_CONF"
-        grep -q '^maxmemory-policy'  "$CACHE_CONF" || echo "maxmemory-policy allkeys-lru"   >> "$CACHE_CONF"
-    fi
-
-    systemctl enable --now "$CACHE_SVC"
-    systemctl restart "$CACHE_SVC"
-    verify_service "$CACHE_SVC"
-
-    save_credential ""
-    save_credential "$(echo "$CACHE_ENGINE" | tr '[:lower:]' '[:upper:]')"
-    save_credential "  Host: 127.0.0.1:6379   Â·   sin password (solo local)"
-    save_credential "  Cliente: ${CACHE_CLI}       Â·   probar: ${CACHE_CLI} ping"
-    save_credential "  maxmemory 512mb / allkeys-lru (para no ahogar la notebook)"
-    save_credential "  .env Laravel: REDIS_HOST=127.0.0.1  CACHE_STORE=redis  QUEUE_CONNECTION=redis"
-fi
-
-# ------------------------------------------------------------
-# MAILPIT â captura TODO el correo saliente
-# ------------------------------------------------------------
-if [[ "$INS_MAILPIT" =~ ^[Ss]$ ]]; then
-    log "Instalando Mailpit..."
-    if curl -fsSL https://raw.githubusercontent.com/axllent/mailpit/develop/install.sh | bash; then
-        id -u mailpit >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d /var/lib/mailpit mailpit
-        mkdir -p /var/lib/mailpit && chown mailpit:mailpit /var/lib/mailpit
-
-        cat > /etc/systemd/system/mailpit.service <<'MAILPIT'
-[Unit]
-Description=Mailpit - servidor SMTP de pruebas
-After=network.target
-
-[Service]
-User=mailpit
-Group=mailpit
-ExecStart=/usr/local/bin/mailpit \
-    --db-file /var/lib/mailpit/mailpit.db \
-    --listen 127.0.0.1:8025 \
-    --smtp 127.0.0.1:1025 \
-    --max 2000
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-MAILPIT
-        systemctl daemon-reload
-        systemctl enable --now mailpit
-        verify_service mailpit
-
-        # Que mail() de PHP tambiÃ©n caiga en Mailpit
-        if [[ "$INS_WEB" =~ ^[Ss]$ ]]; then
-            for V in "${PHP_VERSIONS[@]}"; do
-                for SAPI in fpm cli; do
-                    INI="/etc/php/${V}/${SAPI}/php.ini"
-                    [ -f "$INI" ] && sed -i \
-                        "s|^;*\s*sendmail_path\s*=.*|sendmail_path = /usr/local/bin/mailpit sendmail --smtp-addr localhost:1025|" "$INI"
-                done
-                systemctl restart "php${V}-fpm" 2>/dev/null || true
-            done
-        fi
-
-        save_credential ""
-        save_credential "MAILPIT (captura de correos)"
-        save_credential "  Bandeja web: http://localhost:8025"
-        save_credential "  SMTP:        127.0.0.1:1025 (sin auth, sin TLS)"
-        save_credential "  .env Laravel: MAIL_MAILER=smtp MAIL_HOST=127.0.0.1 MAIL_PORT=1025"
-        save_credential "                MAIL_USERNAME=null MAIL_PASSWORD=null MAIL_ENCRYPTION=null"
-        save_credential "  PHP mail() tambiÃ©n queda redirigido a Mailpit."
-    else
-        log_error "FallÃ³ la instalaciÃ³n de Mailpit"
-        FAILED+=("mailpit")
-    fi
-fi
-
-# ------------------------------------------------------------
-# NODE.JS
-# ------------------------------------------------------------
-if [[ "$INS_NODE" =~ ^[Ss]$ ]]; then
-    log "AÃ±adiendo repositorio NodeSource (Node ${NODE_MAJOR})..."
-    add_repo "nodesource" "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" \
-             "https://deb.nodesource.com/node_${NODE_MAJOR}.x" "nodistro" "main"
-    cat > /etc/apt/preferences.d/nodesource <<'PREF'
-Package: nodejs
-Pin: origin deb.nodesource.com
-Pin-Priority: 700
-PREF
-    apt-get update
-    apt-get install -y nodejs
-    corepack enable >/dev/null 2>&1 || true
-
-    as_user mkdir -p "$USER_HOME/.npm-global"
-    as_user npm config set prefix "$USER_HOME/.npm-global"
-    add_bashrc_line 'export PATH="$HOME/.npm-global/bin:$PATH"'
-
-    log "Node $(node --version) / npm $(npm --version)"
-    save_credential ""
-    save_credential "NODE.JS"
-    save_credential "  Node: $(node --version)   npm: $(npm --version)"
-    save_credential "  corepack activo â 'pnpm' y 'yarn' funcionan directo"
-    save_credential "  npm global sin sudo â ~/.npm-global/bin"
-fi
-
-# ------------------------------------------------------------
-# PYTHON
-# ------------------------------------------------------------
-if [[ "$INS_PYTHON" =~ ^[Ss]$ ]]; then
-    log "Instalando toolchain de Python..."
-    apt-get install -y python3-full python3-venv python3-dev python3-pip pipx \
-        libpq-dev default-libmysqlclient-dev pkg-config
-
-    as_user pipx ensurepath >/dev/null 2>&1 || true
-
-    log "Instalando uv..."
-    as_user bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' >/dev/null 2>&1 \
-        || log_warn "uv fallÃ³ â instÃ¡lalo luego: curl -LsSf https://astral.sh/uv/install.sh | sh"
-
-    save_credential ""
-    save_credential "PYTHON $(python3 --version | awk '{print $2}')"
-    save_credential "  OJO: tu distro usa PEP 668 â 'pip install' global FALLA. Es normal."
-    save_credential "  Proyecto nuevo:   uv init miapp && cd miapp && uv add requests"
-    save_credential "  Otra version py:  uv python install 3.12"
-    save_credential "  Venv clasico:     python3 -m venv .venv && source .venv/bin/activate"
-    save_credential "  CLI tools:        pipx install ruff   (black, poetry, httpie...)"
-fi
-
-# ------------------------------------------------------------
-# DBEAVER
-# ------------------------------------------------------------
-if [[ "$INS_DBEAVER" =~ ^[Ss]$ ]]; then
-    if has_desktop; then
-        log "Instalando DBeaver Community..."
-        DEB="/tmp/dbeaver-ce.deb"
-        if curl -fsSL "https://dbeaver.io/files/dbeaver-ce_latest_${ARCH}.deb" -o "$DEB"; then
-            apt-get install -y "$DEB" && INSTALLED+=("dbeaver-ce") || { log_error "DBeaver fallÃ³"; FAILED+=("dbeaver-ce"); }
-            rm -f "$DEB"
-            save_credential ""
-            save_credential "DBEAVER CE"
-            save_credential "  Lanzador en el menÃº de aplicaciones, o comando: dbeaver"
-            save_credential "  MariaDB:    127.0.0.1:3306  usuario ${MARIADB_DEV_USER:-dev}"
-            save_credential "  PostgreSQL: 127.0.0.1:5432  usuario ${USER_NAME}"
-            save_credential "  Oracle: DBeaver trae el driver JDBC, no necesitas instantclient."
-        else
-            log_error "No se pudo descargar DBeaver"; FAILED+=("dbeaver-ce")
-        fi
-    else
-        log_warn "No detectÃ© entorno grÃ¡fico â omitiendo DBeaver"
-    fi
-fi
-
-# ------------------------------------------------------------
-# VS CODE
-# ------------------------------------------------------------
-if [[ "$INSTALL_VSCODE" =~ ^[Ss]$ ]] && has_desktop; then
-    log "Instalando Visual Studio Code..."
-    add_repo "vscode" "https://packages.microsoft.com/keys/microsoft.asc" \
-             "https://packages.microsoft.com/repos/code" "stable" "main"
-    apt-get update
-    apt-get install -y code && INSTALLED+=("vscode") || log_warn "VS Code fallÃ³"
-fi
 
 # ------------------------------------------------------------
 # HERRAMIENTAS CLI
 # ------------------------------------------------------------
-if [[ "$INS_TOOLS" =~ ^[Ss]$ ]]; then
+setup_tools() {
     log "Instalando herramientas CLI..."
-    apt-get install -y ripgrep fd-find bat fzf btop ncdu httpie tmux
+    apt_install_available ripgrep fd-find bat fzf btop ncdu httpie tmux jq tree unzip zip wget
 
     # Debian renombra estos binarios; los dejamos con el nombre real
     as_user mkdir -p "$USER_HOME/.local/bin"
-    [ -x /usr/bin/batcat ] && as_user ln -sf /usr/bin/batcat "$USER_HOME/.local/bin/bat"
-    [ -x /usr/bin/fdfind ] && as_user ln -sf /usr/bin/fdfind "$USER_HOME/.local/bin/fd"
+    if [ -x /usr/bin/batcat ]; then as_user ln -sf /usr/bin/batcat "$USER_HOME/.local/bin/bat"; fi
+    if [ -x /usr/bin/fdfind ]; then as_user ln -sf /usr/bin/fdfind "$USER_HOME/.local/bin/fd"; fi
 
     save_credential ""
     save_credential "HERRAMIENTAS CLI"
@@ -812,26 +324,29 @@ if [[ "$INS_TOOLS" =~ ^[Ss]$ ]]; then
     save_credential "  btop           monitor de recursos"
     save_credential "  ncdu           que se esta comiendo el disco"
     save_credential "  http GET url   cliente HTTP decente para probar APIs"
-fi
+    INSTALLED+=("herramientas-cli")
+}
 
 # ------------------------------------------------------------
 # GIT + LLAVE SSH
 # ------------------------------------------------------------
-if [[ "$INS_GIT" =~ ^[Ss]$ ]]; then
+setup_git() {
     if [ -z "$GIT_NAME" ] || [ -z "$GIT_EMAIL" ]; then
-        log_warn "GIT_NAME/GIT_EMAIL vacÃ­os â omitiendo configuraciÃ³n de Git y llave SSH"
-    else
-        log "Configurando Git global para $GIT_NAME..."
-        as_user git config --global user.name  "$GIT_NAME"
-        as_user git config --global user.email "$GIT_EMAIL"
-        as_user git config --global core.editor "$GIT_EDITOR"
-        as_user git config --global init.defaultBranch main
-        as_user git config --global pull.rebase false
-        as_user git config --global push.autoSetupRemote true
-        as_user git config --global rerere.enabled true
-        as_user git config --global diff.algorithm histogram
+        log_warn "GIT_NAME/GIT_EMAIL vacíos — omitiendo configuración de Git y llave SSH"
+        return 0
+    fi
 
-        cat > "$USER_HOME/.gitignore_global" <<'GITIGNORE'
+    log "Configurando Git global para $GIT_NAME..."
+    as_user git config --global user.name  "$GIT_NAME"
+    as_user git config --global user.email "$GIT_EMAIL"
+    as_user git config --global core.editor "$GIT_EDITOR"
+    as_user git config --global init.defaultBranch main
+    as_user git config --global pull.rebase false
+    as_user git config --global push.autoSetupRemote true
+    as_user git config --global rerere.enabled true
+    as_user git config --global diff.algorithm histogram
+
+    cat > "$USER_HOME/.gitignore_global" <<'GITIGNORE'
 .DS_Store
 Thumbs.db
 .idea/
@@ -846,78 +361,1089 @@ __pycache__/
 dist/
 build/
 GITIGNORE
-        chown "$USER_NAME":"$USER_GROUP" "$USER_HOME/.gitignore_global"
-        as_user git config --global core.excludesfile "$USER_HOME/.gitignore_global"
+    chown "$USER_NAME":"$USER_GROUP" "$USER_HOME/.gitignore_global"
+    as_user git config --global core.excludesfile "$USER_HOME/.gitignore_global"
 
-        SSH_KEY="$USER_HOME/.ssh/id_ed25519"
-        if [ ! -f "$SSH_KEY" ]; then
-            log "Generando llave SSH ed25519..."
-            as_user mkdir -p "$USER_HOME/.ssh"
-            as_user chmod 700 "$USER_HOME/.ssh"
-            as_user ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY" -N "" -q
+    local SSH_KEY="$USER_HOME/.ssh/id_ed25519"
+    if [ ! -f "$SSH_KEY" ]; then
+        log "Generando llave SSH ed25519..."
+        as_user mkdir -p "$USER_HOME/.ssh"
+        as_user chmod 700 "$USER_HOME/.ssh"
+        as_user ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY" -N "" -q
+    fi
+
+    save_credential ""
+    save_credential "GIT"
+    save_credential "  $GIT_NAME <$GIT_EMAIL> · editor $GIT_EDITOR"
+    save_credential ""
+    save_credential "  Llave SSH pública (pégala en GitHub/GitLab → Settings → SSH Keys):"
+    save_credential "  $(cat "${SSH_KEY}.pub")"
+    save_credential "  Probar: ssh -T git@github.com"
+    INSTALLED+=("git+ssh")
+}
+
+# ------------------------------------------------------------
+# mkcert — CA local para HTTPS en .test (corre en el host)
+# ------------------------------------------------------------
+setup_mkcert() {
+    log "Instalando mkcert (certificados locales de confianza)..."
+    if apt-get install -y mkcert libnss3-tools 2>/dev/null; then
+        as_user mkcert -install >/dev/null 2>&1 \
+            || log_warn "mkcert -install falló (¿sin navegador aún?). Corre 'mkcert -install' después."
+        MKCERT_OK=1
+        log "mkcert listo — los sitios .test tendrán HTTPS válido"
+    else
+        MKCERT_OK=0
+        log_warn "mkcert no disponible en los repos — los sitios quedarán solo en HTTP"
+    fi
+}
+
+# ------------------------------------------------------------
+# APPS GRÁFICAS: DBeaver y VS Code (en el host: no tienen sentido en Docker)
+# ------------------------------------------------------------
+setup_gui_apps() {
+    if ! has_desktop; then
+        log_warn "No detecté entorno gráfico — omito DBeaver y VS Code"
+        return 0
+    fi
+
+    log "Instalando DBeaver Community..."
+    local DEB="/tmp/dbeaver-ce.deb"
+    if curl -fsSL "https://dbeaver.io/files/dbeaver-ce_latest_${ARCH}.deb" -o "$DEB"; then
+        if apt-get install -y "$DEB"; then INSTALLED+=("dbeaver-ce"); else log_error "DBeaver falló"; FAILED+=("dbeaver-ce"); fi
+        rm -f "$DEB"
+        save_credential ""
+        save_credential "DBEAVER CE"
+        save_credential "  Lanzador en el menú de aplicaciones, o comando: dbeaver"
+        save_credential "  MariaDB:    127.0.0.1:3306  usuario ${DB_USER}"
+        save_credential "  PostgreSQL: 127.0.0.1:5432  usuario ${DB_USER}  base ${DB_USER}"
+        save_credential "  Oracle: DBeaver trae el driver JDBC, no necesitas instantclient."
+    else
+        log_error "No se pudo descargar DBeaver"; FAILED+=("dbeaver-ce")
+    fi
+
+    if [[ "$INSTALL_VSCODE" =~ ^[Ss]$ ]]; then
+        log "Instalando Visual Studio Code..."
+        add_repo "vscode" "https://packages.microsoft.com/keys/microsoft.asc" \
+                 "https://packages.microsoft.com/repos/code" "stable" "main"
+        apt-get update
+        if apt-get install -y code; then INSTALLED+=("vscode"); else log_warn "VS Code falló"; fi
+    fi
+}
+
+# ------------------------------------------------------------
+# DOCKER ENGINE + COMPOSE
+# ------------------------------------------------------------
+# Detecta cómo invocar compose v2: plugin ("docker compose") o binario ("docker-compose" v2).
+detect_compose() {
+    DC=()
+    if docker compose version >/dev/null 2>&1; then
+        DC=(docker compose)
+    elif command -v docker-compose >/dev/null 2>&1 && [[ "$(docker-compose version --short 2>/dev/null || true)" == 2* ]]; then
+        DC=(docker-compose)
+    fi
+    [ ${#DC[@]} -gt 0 ]
+}
+
+setup_docker_engine() {
+    if command -v docker >/dev/null 2>&1 && detect_compose; then
+        log "Docker y compose ya están instalados"
+    else
+        # Orden: repo oficial de Docker si publica para tu versión; si no, paquetes de tu distro.
+        if url_ok "https://download.docker.com/linux/${DISTRO}/dists/${CODENAME}/InRelease"; then
+            log "Instalando Docker CE (repo oficial)..."
+            add_repo "docker" "https://download.docker.com/linux/${DISTRO}/gpg" \
+                     "https://download.docker.com/linux/${DISTRO}" "$CODENAME" "stable"
+            apt-get update
+            apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        else
+            log_warn "El repo oficial de Docker no publica para ${CODENAME} — uso los paquetes de ${OS_PRETTY}"
+            apt-get install -y docker.io
+            apt_install_available docker-compose-v2 docker-buildx
+            if ! detect_compose; then apt_install_available docker-compose; fi
         fi
+    fi
 
-        save_credential ""
-        save_credential "GIT"
-        save_credential "  $GIT_NAME <$GIT_EMAIL> Â· editor $GIT_EDITOR"
-        save_credential ""
-        save_credential "  Llave SSH pÃºblica (pÃ©gala en GitHub/GitLab â Settings â SSH Keys):"
-        save_credential "  $(cat "${SSH_KEY}.pub")"
-        save_credential "  Probar: ssh -T git@github.com"
+    systemctl enable --now docker
+    usermod -aG docker "$USER_NAME"
+
+    if ! detect_compose; then
+        log_error "Docker quedó instalado pero no encuentro Compose v2."
+        log_error "Instálalo (en Ubuntu: docker-compose-v2; en Debian: docker-compose) y vuelve a correr el script."
+        FAILED+=("docker-compose")
+        exit 1
+    fi
+    verify_service docker
+    log "Compose: ${DC[*]}"
+}
+
+# ------------------------------------------------------------
+# STACK: ARCHIVOS DE CONFIGURACIÓN
+# ------------------------------------------------------------
+# env_get CLAVE ARCHIVO → valor sin comillas, o vacío si no existe
+env_get() {
+    if [ -f "$2" ]; then
+        grep -E "^$1=" "$2" | tail -n1 | cut -d= -f2- | sed 's/^"//; s/"$//' || true
+    fi
+}
+
+validate_password() {
+    if ! [[ "$2" =~ ^[A-Za-z0-9._@%+=:,-]+$ ]]; then
+        log_error "$1 tiene caracteres no permitidos. Usa solo letras, números y . _ @ % + = : , -"
+        exit 1
+    fi
+}
+
+# resolve_password NOMBRE VALOR_CONFIG VALOR_EXISTENTE
+# Las bases solo aplican su contraseña al CREAR el volumen: si ya existe una, se conserva.
+resolve_password() {
+    local name="$1" cfg="$2" cur="$3"
+    if [ -n "$cur" ]; then
+        if [ "$cfg" != "auto" ] && [ "$cfg" != "$cur" ]; then
+            log_warn "$name: las bases ya se crearon con otra contraseña; conservo la actual (ver $STACK_DIR/.env)." >&2
+        fi
+        echo "$cur"
+    elif [ "$cfg" = "auto" ]; then
+        gen_password
+    else
+        echo "$cfg"
+    fi
+}
+
+write_env_file() {
+    local envf="$STACK_DIR/.env" db_pass root_pass
+    # Validar aquí, fuera de $(...): dentro de una sustitución un "exit" no detiene el script
+    # y el mensaje de error terminaría guardado en la variable.
+    if [ "$DB_PASSWORD" != "auto" ]; then validate_password DB_PASSWORD "$DB_PASSWORD"; fi
+    if [ "$MARIADB_ROOT_PASSWORD" != "auto" ]; then validate_password MARIADB_ROOT_PASSWORD "$MARIADB_ROOT_PASSWORD"; fi
+    db_pass=$(resolve_password DB_PASSWORD "$DB_PASSWORD" "$(env_get DB_PASSWORD "$envf")")
+    root_pass=$(resolve_password MARIADB_ROOT_PASSWORD "$MARIADB_ROOT_PASSWORD" "$(env_get MARIADB_ROOT_PASSWORD "$envf")")
+
+    cat > "$envf" <<EOF
+# Generado por install-dev.sh — contiene contraseñas. No lo subas a Git.
+COMPOSE_PROJECT_NAME=dev-stack
+PROJECTS_DIR="${PROJECTS_DIR}"
+DEV_UID=${DEV_UID}
+DEV_GID=${DEV_GID}
+TZ="${TIMEZONE}"
+PHP_VERSION="${PHP_VERSION}"
+NODE_MAJOR="${NODE_MAJOR}"
+PYTHON_VERSION="${PYTHON_VERSION}"
+INSTALL_XDEBUG="${INSTALL_XDEBUG}"
+IMG_NGINX="${IMG_NGINX}"
+IMG_MARIADB="${IMG_MARIADB}"
+IMG_POSTGRES="${IMG_POSTGRES}"
+IMG_REDIS="${IMG_REDIS}"
+IMG_MAILPIT="${IMG_MAILPIT}"
+DB_USER="${DB_USER}"
+DB_PASSWORD="${db_pass}"
+MARIADB_ROOT_PASSWORD="${root_pass}"
+EOF
+    chmod 600 "$envf"
+}
+
+write_compose_file() {
+    cat > "$STACK_DIR/docker-compose.yml" <<'COMPOSE_YML'
+# Generado por install-dev.sh — las variables vienen de .env
+# Todos los puertos se publican SOLO en 127.0.0.1 (no quedan expuestos a tu red).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  nginx:
+    image: ${IMG_NGINX}
+    container_name: dev-nginx
+    restart: unless-stopped
+    depends_on:
+      - php
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+    volumes:
+      # Los proyectos se montan con la MISMA ruta que en tu host
+      - ${PROJECTS_DIR}:${PROJECTS_DIR}:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    logging: *logging
+
+  php:
+    build:
+      context: ./php
+      args:
+        PHP_VERSION: ${PHP_VERSION}
+        DEV_UID: ${DEV_UID}
+        DEV_GID: ${DEV_GID}
+        INSTALL_XDEBUG: ${INSTALL_XDEBUG}
+    image: dev-php:${PHP_VERSION}
+    container_name: dev-php
+    restart: unless-stopped
+    working_dir: ${PROJECTS_DIR}
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ${PROJECTS_DIR}:${PROJECTS_DIR}
+      - php_cache:/cache
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging: *logging
+
+  mariadb:
+    image: ${IMG_MARIADB}
+    container_name: dev-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_USER: ${DB_USER}
+      MARIADB_PASSWORD: ${DB_PASSWORD}
+      TZ: ${TZ}
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./mariadb/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *logging
+
+  postgres:
+    image: ${IMG_POSTGRES}
+    container_name: dev-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      TZ: ${TZ}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PostgreSQL 18+ guarda los datos en /var/lib/postgresql/<versión>/; montar
+      # /var/lib/postgresql (y no .../data) funciona también con versiones anteriores.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *logging
+
+  redis:
+    image: ${IMG_REDIS}
+    container_name: dev-redis
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    logging: *logging
+
+  mailpit:
+    image: ${IMG_MAILPIT}
+    container_name: dev-mailpit
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: "2000"
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      TZ: ${TZ}
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+    volumes:
+      - mailpit_data:/data
+    logging: *logging
+
+volumes:
+  mariadb_data:
+  postgres_data:
+  redis_data:
+  mailpit_data:
+  php_cache:
+COMPOSE_YML
+}
+
+write_php_files() {
+    mkdir -p "$STACK_DIR/php"
+
+    cat > "$STACK_DIR/php/Dockerfile" <<'PHP_DOCKERFILE'
+# Imagen de PHP para desarrollo (FPM + CLI). Generada por install-dev.sh
+ARG PHP_VERSION=8.5
+FROM php:${PHP_VERSION}-fpm
+
+ARG PHP_VERSION=8.5
+ARG DEV_UID=1000
+ARG DEV_GID=1000
+ARG INSTALL_XDEBUG=s
+
+ADD https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/install-php-extensions
+RUN chmod +x /usr/local/bin/install-php-extensions
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git unzip msmtp \
+ && rm -rf /var/lib/apt/lists/*
+
+# Extensiones imprescindibles (Laravel, Symfony, WordPress...) y Composer
+RUN install-php-extensions @composer pdo_mysql mysqli pdo_pgsql pgsql zip gd intl bcmath exif pcntl redis
+
+# Opcionales: si aún no existen para esta versión de PHP, se omiten sin romper el build
+RUN install-php-extensions imagick || echo ">> imagick no disponible para PHP ${PHP_VERSION}: se omite"
+RUN if [ "${INSTALL_XDEBUG}" = "s" ]; then \
+        install-php-extensions xdebug || echo ">> xdebug no disponible para PHP ${PHP_VERSION}: se omite"; \
+    fi
+
+# Instalador de Laravel disponible globalmente (comando: laravel)
+RUN COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_HOME=/opt/composer \
+    composer global require laravel/installer --no-interaction --no-progress
+
+# www-data pasa a tener TU uid/gid: los archivos que cree PHP (storage/, cache/) serán tuyos
+RUN groupmod -o -g ${DEV_GID} www-data \
+ && usermod -o -u ${DEV_UID} -g ${DEV_GID} www-data \
+ && mkdir -p /cache/composer /home/dev \
+ && chown -R ${DEV_UID}:${DEV_GID} /cache /home/dev /opt/composer
+
+RUN cp "$PHP_INI_DIR/php.ini-development" "$PHP_INI_DIR/php.ini"
+COPY dev.ini /usr/local/etc/php/conf.d/99-dev.ini
+COPY msmtprc /etc/msmtprc
+
+ENV HOME=/home/dev \
+    COMPOSER_HOME=/opt/composer \
+    COMPOSER_CACHE_DIR=/cache/composer \
+    PATH=/opt/composer/vendor/bin:$PATH
+PHP_DOCKERFILE
+
+    cat > "$STACK_DIR/php/dev.ini" <<EOF
+; Ajustes de desarrollo (install-dev.sh)
+date.timezone = ${TIMEZONE}
+memory_limit = 512M
+upload_max_filesize = 64M
+post_max_size = 64M
+max_execution_time = 300
+sendmail_path = "/usr/bin/msmtp -t"
+
+; Xdebug: modo trigger (no frena nada hasta que se lo pidas). Si la extensión no está, se ignora.
+xdebug.mode = develop,debug
+xdebug.start_with_request = trigger
+xdebug.client_host = host.docker.internal
+xdebug.client_port = 9003
+EOF
+
+    # mail() de PHP → Mailpit
+    cat > "$STACK_DIR/php/msmtprc" <<'EOF'
+defaults
+auth off
+tls off
+logfile /dev/null
+
+account mailpit
+host mailpit
+port 1025
+from dev@localhost
+
+account default : mailpit
+EOF
+}
+
+write_node_python_files() {
+    mkdir -p "$STACK_DIR/node" "$STACK_DIR/python"
+
+    cat > "$STACK_DIR/node/Dockerfile" <<'NODE_DOCKERFILE'
+# Node para desarrollo. Generada por install-dev.sh
+ARG NODE_MAJOR=24
+FROM node:${NODE_MAJOR}
+
+# HOME compartido (volumen dev-node-home): cachés de npm/pnpm/corepack persisten entre ejecuciones.
+# El contenedor corre con TU uid, que no existe en la imagen, por eso HOME es escribible por todos.
+ENV HOME=/home/dev \
+    npm_config_prefix=/home/dev/.npm-global \
+    PATH=/home/dev/.npm-global/bin:$PATH \
+    COREPACK_HOME=/home/dev/.cache/corepack \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+RUN (corepack enable || (npm install -g corepack && corepack enable)) \
+ && mkdir -p /home/dev \
+ && chmod 777 /home/dev
+NODE_DOCKERFILE
+
+    cat > "$STACK_DIR/python/Dockerfile" <<'PY_DOCKERFILE'
+# Python + uv para desarrollo. Generada por install-dev.sh
+ARG PYTHON_VERSION=3.13
+FROM python:${PYTHON_VERSION}
+
+ENV HOME=/home/dev \
+    PATH=/home/dev/.local/bin:$PATH \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_CACHE_DIR=/home/dev/.cache/pip \
+    UV_CACHE_DIR=/home/dev/.cache/uv \
+    UV_LINK_MODE=copy
+
+RUN pip install --no-cache-dir uv \
+ && mkdir -p /home/dev \
+ && chmod 777 /home/dev
+PY_DOCKERFILE
+}
+
+write_nginx_files() {
+    mkdir -p "$STACK_DIR/nginx/conf.d" "$STACK_DIR/nginx/certs"
+
+    # Resolución de nombres en tiempo de ejecución: nginx no se cae si php se reinicia
+    cat > "$STACK_DIR/nginx/conf.d/00-resolver.conf" <<'EOF'
+resolver 127.0.0.11 valid=10s ipv6=off;
+EOF
+
+    # Sitio por defecto: índice de tus proyectos PHP (solo accesible desde tu máquina)
+    cat > "$STACK_DIR/nginx/conf.d/00-default.conf" <<EOF
+server {
+    listen 80 default_server;
+    server_name localhost;
+    root ${PROJECTS_DIR}/php;
+    autoindex on;
+
+    location / { try_files \$uri \$uri/ =404; }
+    location ~ /\.(?!well-known) { deny all; }
+}
+EOF
+}
+
+write_mariadb_init() {
+    mkdir -p "$STACK_DIR/mariadb/init"
+    # Se ejecuta SOLO la primera vez que se crea el volumen de MariaDB.
+    cat > "$STACK_DIR/mariadb/init/01-grants.sh" <<'INIT_GRANTS'
+#!/bin/bash
+# El usuario de la app queda con todos los privilegios (es una base de desarrollo).
+mariadb -uroot -p"${MARIADB_ROOT_PASSWORD}" <<SQL
+GRANT ALL PRIVILEGES ON *.* TO '${MARIADB_USER}'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+SQL
+INIT_GRANTS
+    chmod +x "$STACK_DIR/mariadb/init/01-grants.sh"
+}
+
+# ------------------------------------------------------------
+# STACK: COMANDOS (bin/)
+# ------------------------------------------------------------
+write_bin_scripts() {
+    mkdir -p "$STACK_DIR/bin"
+
+    # ---------- _lib.sh: funciones comunes ----------
+    cat > "$STACK_DIR/bin/_lib.sh" <<'LIB_SH'
+# _lib.sh — funciones comunes de los comandos de dev-stack (no se ejecuta directamente)
+dev_err() { echo "[dev] $*" >&2; }
+
+BIN_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+STACK_DIR="$(dirname "$BIN_DIR")"
+ENV_FILE="$STACK_DIR/.env"
+[ -f "$ENV_FILE" ] || { dev_err "No encuentro $ENV_FILE"; exit 1; }
+set -a; . "$ENV_FILE"; set +a
+
+DOCKER_SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
+
+docker_ready() {
+    if [ -n "${DOCKER_HOST:-}" ]; then return 0; fi
+    if [ ! -S "$DOCKER_SOCK" ]; then
+        dev_err "Docker no está corriendo. Inícialo con: sudo systemctl start docker"
+        return 1
+    fi
+    if [ ! -w "$DOCKER_SOCK" ]; then
+        if getent group docker | grep -qw "$(id -un)"; then
+            dev_err "Tu usuario ya está en el grupo 'docker', pero esta sesión aún no lo ve: cierra sesión y vuelve a entrar."
+        else
+            dev_err "Tu usuario no está en el grupo 'docker'. Ejecuta: sudo usermod -aG docker \$USER  y vuelve a iniciar sesión."
+        fi
+        return 1
+    fi
+    return 0
+}
+
+compose() {
+    if docker compose version >/dev/null 2>&1; then
+        docker compose --project-directory "$STACK_DIR" "$@"
+    else
+        docker-compose --project-directory "$STACK_DIR" "$@"
+    fi
+}
+
+is_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || true)" = "true" ]; }
+
+# ensure_running <contenedor> <servicio>
+ensure_running() {
+    if ! is_running "$1"; then
+        dev_err "Iniciando $2..."
+        compose up -d "$2" >&2
+    fi
+}
+
+require_image() {
+    if ! docker image inspect "$1" >/dev/null 2>&1; then
+        dev_err "Falta la imagen $1. Constrúyela con: devstack rebuild"
+        exit 1
+    fi
+}
+
+set_tty_flags() {
+    TTY_FLAGS=(-i)
+    if [ -t 0 ] && [ -t 1 ]; then TTY_FLAGS=(-it); fi
+}
+
+# Los proyectos se montan con la MISMA ruta que en tu host: no hay que traducir nada.
+resolve_workdir() {
+    case "$PWD/" in
+        "$PROJECTS_DIR"/*) WORKDIR="$PWD" ;;
+        *)
+            WORKDIR="$PROJECTS_DIR"
+            if [ -t 2 ]; then dev_err "Aviso: estás fuera de $PROJECTS_DIR; el comando corre en esa carpeta."; fi
+            ;;
+    esac
+}
+LIB_SH
+
+    # ---------- dev-wrapper: php, node, python... (según el nombre con que se invoque) ----------
+    cat > "$STACK_DIR/bin/dev-wrapper" <<'WRAPPER_SH'
+#!/usr/bin/env bash
+# dev-wrapper — ejecuta php, composer, node, python... dentro de contenedores Docker.
+# Se invoca mediante enlaces simbólicos (php, composer, npm, python...): el
+# comportamiento depende del nombre con que se llame.
+set -euo pipefail
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lib.sh"
+
+NAME="$(basename "$0")"
+docker_ready || exit 1
+set_tty_flags
+
+case "$NAME" in
+    php|composer|laravel)
+        resolve_workdir
+        ensure_running dev-php php
+        exec docker exec "${TTY_FLAGS[@]}" -u "$DEV_UID:$DEV_GID" -w "$WORKDIR" \
+            -e HOME=/home/dev -e TERM -e XDEBUG_TRIGGER -e XDEBUG_SESSION -e XDEBUG_MODE -e XDEBUG_CONFIG \
+            dev-php "$NAME" "$@"
+        ;;
+    node|npm|npx|pnpm|yarn|corepack)
+        resolve_workdir
+        require_image "dev-node:$NODE_MAJOR"
+        # --network host: los servidores de desarrollo (Vite, etc.) quedan en localhost, como si fueran nativos
+        exec docker run --rm "${TTY_FLAGS[@]}" --init --network host \
+            -u "$DEV_UID:$DEV_GID" -e HOME=/home/dev -e TERM \
+            -v dev-node-home:/home/dev -v "$PROJECTS_DIR:$PROJECTS_DIR" -w "$WORKDIR" \
+            "dev-node:$NODE_MAJOR" "$NAME" "$@"
+        ;;
+    python|pip|uv|uvx)
+        resolve_workdir
+        require_image "dev-python:$PYTHON_VERSION"
+        exec docker run --rm "${TTY_FLAGS[@]}" --init --network host \
+            -u "$DEV_UID:$DEV_GID" -e HOME=/home/dev -e TERM \
+            -v dev-python-home:/home/dev -v "$PROJECTS_DIR:$PROJECTS_DIR" -w "$WORKDIR" \
+            "dev-python:$PYTHON_VERSION" "$NAME" "$@"
+        ;;
+    mariadb)
+        ensure_running dev-mariadb mariadb
+        # La contraseña va por variable de entorno, no en los argumentos (que se ven en `ps`)
+        export MYSQL_PWD="$DB_PASSWORD"
+        exec docker exec "${TTY_FLAGS[@]}" -e MYSQL_PWD dev-mariadb mariadb -u"$DB_USER" "$@"
+        ;;
+    psql)
+        ensure_running dev-postgres postgres
+        export PGPASSWORD="$DB_PASSWORD"
+        exec docker exec "${TTY_FLAGS[@]}" -e PGPASSWORD dev-postgres psql -U "$DB_USER" "$@"
+        ;;
+    redis-cli)
+        ensure_running dev-redis redis
+        exec docker exec "${TTY_FLAGS[@]}" dev-redis redis-cli "$@"
+        ;;
+    *)
+        dev_err "Comando desconocido: $NAME"
+        exit 1
+        ;;
+esac
+WRAPPER_SH
+
+    # ---------- devstack: gestionar el stack ----------
+    cat > "$STACK_DIR/bin/devstack" <<'DEVSTACK_SH'
+#!/usr/bin/env bash
+# devstack — gestiona los contenedores del entorno de desarrollo
+set -euo pipefail
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lib.sh"
+
+docker_ready || exit 1
+
+CMD="${1:-help}"
+if [ $# -gt 0 ]; then shift; fi
+
+case "$CMD" in
+    up)       compose up -d "$@" ;;
+    down)     compose down "$@" ;;
+    restart)  compose restart "$@" ;;
+    ps|status) compose ps "$@" ;;
+    logs)     compose logs -f --tail=100 "$@" ;;
+    shell)
+        set_tty_flags; resolve_workdir
+        ensure_running dev-php php
+        exec docker exec "${TTY_FLAGS[@]}" -u "$DEV_UID:$DEV_GID" -w "$WORKDIR" -e HOME=/home/dev -e TERM dev-php bash
+        ;;
+    rebuild)
+        compose build --pull php
+        docker build --pull -t "dev-node:$NODE_MAJOR" --build-arg "NODE_MAJOR=$NODE_MAJOR" "$STACK_DIR/node"
+        docker build --pull -t "dev-python:$PYTHON_VERSION" --build-arg "PYTHON_VERSION=$PYTHON_VERSION" "$STACK_DIR/python"
+        compose up -d
+        ;;
+    info)
+        echo "Proyectos:   $PROJECTS_DIR  (los sitios PHP van en $PROJECTS_DIR/php)"
+        echo "Stack:       $STACK_DIR"
+        echo "Índice:      http://localhost"
+        echo "Mailpit:     http://localhost:8025   (SMTP 127.0.0.1:1025)"
+        echo "MariaDB:     127.0.0.1:3306  usuario $DB_USER  contraseña $DB_PASSWORD"
+        echo "PostgreSQL:  127.0.0.1:5432  usuario $DB_USER  contraseña $DB_PASSWORD"
+        echo "Redis:       127.0.0.1:6379"
+        echo "MariaDB root (solo dentro del contenedor): $MARIADB_ROOT_PASSWORD"
+        ;;
+    help|-h|--help|*)
+        cat <<'HELP'
+Uso: devstack <comando>
+
+  up [servicio]       Levanta los contenedores
+  down                Los detiene y elimina (los datos se conservan en volúmenes)
+  restart [servicio]  Reinicia
+  ps                  Estado de los contenedores
+  logs [servicio]     Logs en vivo (nginx, php, mariadb, postgres, redis, mailpit)
+  shell               Terminal dentro del contenedor de PHP (en la carpeta actual)
+  rebuild             Reconstruye las imágenes de PHP, Node y Python con la base más nueva
+  info                Direcciones y credenciales
+HELP
+        ;;
+esac
+DEVSTACK_SH
+
+    # ---------- newsite ----------
+    cat > "$STACK_DIR/bin/newsite" <<'NEWSITE_SH'
+#!/usr/bin/env bash
+# newsite <nombre> — crea https://<nombre>.test para ~/proyectos/php/<nombre>
+set -euo pipefail
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lib.sh"
+
+NAME="${1:-}"
+if [ -z "$NAME" ]; then echo "Uso: newsite <nombre>" >&2; exit 1; fi
+if ! [[ "$NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+    dev_err "Nombre inválido: usa minúsculas, números y guiones (ej: mi-tienda)."; exit 1
+fi
+docker_ready || exit 1
+
+HOSTS_FILE="${DEV_HOSTS_FILE:-/etc/hosts}"
+CONF_DIR="$STACK_DIR/nginx/conf.d"
+CERT_DIR="$STACK_DIR/nginx/certs"
+ROOT="$PROJECTS_DIR/php/$NAME"
+
+if [ ! -d "$ROOT" ]; then
+    dev_err "No existe $ROOT"
+    dev_err "Crea el proyecto primero (ej: cd $PROJECTS_DIR/php && laravel new $NAME)"
+    dev_err "o una carpeta vacía:  mkdir -p $ROOT"
+    exit 1
+fi
+if [ -d "$ROOT/public" ]; then DOCROOT="$ROOT/public"; else DOCROOT="$ROOT"; fi
+
+# Certificado local de confianza (mkcert corre en tu host)
+USE_SSL=0
+if command -v mkcert >/dev/null 2>&1; then
+    mkdir -p "$CERT_DIR"
+    if [ ! -f "$CERT_DIR/$NAME.test.pem" ]; then
+        mkcert -cert-file "$CERT_DIR/$NAME.test.pem" -key-file "$CERT_DIR/$NAME.test-key.pem" \
+            "$NAME.test" "*.$NAME.test" >/dev/null 2>&1 || true
+    fi
+    if [ -f "$CERT_DIR/$NAME.test.pem" ] && [ -f "$CERT_DIR/$NAME.test-key.pem" ]; then USE_SSL=1; fi
+fi
+
+if [ "$USE_SSL" = 1 ]; then
+    LISTEN_SSL="    listen 443 ssl;
+    http2 on;
+    ssl_certificate     /etc/nginx/certs/$NAME.test.pem;
+    ssl_certificate_key /etc/nginx/certs/$NAME.test-key.pem;"
+    SCHEME="https"
+else
+    LISTEN_SSL=""
+    SCHEME="http"
+    dev_err "mkcert no disponible o falló: el sitio quedará solo en HTTP."
+fi
+
+cat > "$CONF_DIR/$NAME.conf" <<CONF
+server {
+    listen 80;
+$LISTEN_SSL
+    server_name $NAME.test *.$NAME.test;
+    root $DOCROOT;
+    index index.php index.html;
+
+    client_max_body_size 64M;
+
+    location / { try_files \$uri \$uri/ /index.php?\$query_string; }
+
+    location ~ \.php\$ {
+        set \$php_upstream php:9000;
+        fastcgi_pass \$php_upstream;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT \$realpath_root;
+        fastcgi_read_timeout 300;
+    }
+
+    location ~ /\.(?!well-known) { deny all; }
+}
+CONF
+
+# /etc/hosts necesita permisos de administrador
+if ! grep -qE "[[:space:]]${NAME}\.test([[:space:]]|\$)" "$HOSTS_FILE"; then
+    if [ -w "$HOSTS_FILE" ]; then
+        echo "127.0.0.1   $NAME.test # dev-stack" >> "$HOSTS_FILE"
+    else
+        echo "127.0.0.1   $NAME.test # dev-stack" | sudo tee -a "$HOSTS_FILE" >/dev/null
     fi
 fi
+
+ensure_running dev-nginx nginx
+if docker exec dev-nginx nginx -t >/dev/null 2>&1; then
+    docker exec dev-nginx nginx -s reload >/dev/null 2>&1
+else
+    dev_err "La configuración de nginx tiene errores:"
+    docker exec dev-nginx nginx -t || true
+    exit 1
+fi
+
+echo "Listo → $SCHEME://$NAME.test"
+echo "  docroot: $DOCROOT"
+if [ "$DOCROOT" = "$ROOT" ]; then
+    echo "  (si tu proyecto usa la carpeta public/, vuelve a correr 'newsite $NAME' cuando exista)"
+fi
+NEWSITE_SH
+
+    # ---------- delsite ----------
+    cat > "$STACK_DIR/bin/delsite" <<'DELSITE_SH'
+#!/usr/bin/env bash
+# delsite <nombre> — quita el sitio (NO borra tus archivos)
+set -euo pipefail
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/_lib.sh"
+
+NAME="${1:-}"
+if [ -z "$NAME" ]; then echo "Uso: delsite <nombre>" >&2; exit 1; fi
+if ! [[ "$NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then dev_err "Nombre inválido."; exit 1; fi
+docker_ready || exit 1
+
+HOSTS_FILE="${DEV_HOSTS_FILE:-/etc/hosts}"
+rm -f "$STACK_DIR/nginx/conf.d/$NAME.conf" \
+      "$STACK_DIR/nginx/certs/$NAME.test.pem" "$STACK_DIR/nginx/certs/$NAME.test-key.pem"
+
+if grep -qE "[[:space:]]${NAME}\.test([[:space:]]|\$)" "$HOSTS_FILE"; then
+    if [ -w "$HOSTS_FILE" ]; then
+        sed -i "/[[:space:]]${NAME}\.test[[:space:]]*#* *dev-stack\$/d" "$HOSTS_FILE"
+    else
+        sudo sed -i "/[[:space:]]${NAME}\.test[[:space:]]*#* *dev-stack\$/d" "$HOSTS_FILE"
+    fi
+fi
+
+if is_running dev-nginx; then docker exec dev-nginx nginx -s reload >/dev/null 2>&1 || true; fi
+echo "Sitio $NAME eliminado. Los archivos en $PROJECTS_DIR/php/$NAME siguen ahí."
+DELSITE_SH
+
+    chmod +x "$STACK_DIR/bin/dev-wrapper" "$STACK_DIR/bin/devstack" \
+             "$STACK_DIR/bin/newsite" "$STACK_DIR/bin/delsite"
+}
+
+write_stack_files() {
+    log "Escribiendo la configuración del stack en $STACK_DIR ..."
+    mkdir -p "$STACK_DIR" "$PROJECTS_DIR/php"
+    write_env_file
+    write_compose_file
+    write_php_files
+    write_node_python_files
+    write_nginx_files
+    write_mariadb_init
+    write_bin_scripts
+    cat > "$STACK_DIR/.gitignore" <<'EOF'
+.env
+nginx/certs/
+EOF
+    chown -R "$USER_NAME":"$USER_GROUP" "$STACK_DIR" "$PROJECTS_DIR"
+}
+
+# ------------------------------------------------------------
+# STACK: construir y levantar
+# ------------------------------------------------------------
+check_ports() {
+    local busy=() p
+    for p in 80 443 3306 5432 6379 8025 1025; do
+        if [ -n "$(ss -ltnH "sport = :$p" 2>/dev/null)" ]; then busy+=("$p"); fi
+    done
+    if [ ${#busy[@]} -gt 0 ]; then
+        log_error "Estos puertos ya están en uso en tu máquina: ${busy[*]}"
+        log_error "Los contenedores necesitan 80, 443, 3306, 5432, 6379, 8025 y 1025."
+        log_error "Mira quién los usa:  sudo ss -ltnp | grep -E ':(80|443|3306|5432|6379|8025|1025)\\b'"
+        log_error "Causas típicas: Apache, o MariaDB/PostgreSQL/Redis instalados antes con apt."
+        exit 1
+    fi
+}
+
+build_failed() {
+    log_error "Falló la construcción de la imagen '$1'."
+    log_error "El detalle está arriba y en el log: $LOG_FILE"
+    log_error "Corrige la causa y vuelve a correr el script (es seguro repetirlo)."
+    FAILED+=("imagen-$1")
+    exit 1
+}
+
+build_images() {
+    log "Construyendo imágenes (PHP $PHP_VERSION, Node $NODE_MAJOR, Python $PYTHON_VERSION)..."
+    log "La primera vez tarda varios minutos y descarga varios GB."
+    "${DC[@]}" --project-directory "$STACK_DIR" build --pull php || build_failed php
+    docker build --pull -t "dev-node:${NODE_MAJOR}" --build-arg "NODE_MAJOR=${NODE_MAJOR}" \
+        "$STACK_DIR/node" || build_failed node
+    docker build --pull -t "dev-python:${PYTHON_VERSION}" --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
+        "$STACK_DIR/python" || build_failed python
+}
+
+# Espera a que todos los contenedores estén corriendo (y sanos, si tienen healthcheck)
+wait_for_containers() {
+    local timeout="${1:-180}" waited=0 c st hs
+    local names=(dev-nginx dev-php dev-mariadb dev-postgres dev-redis dev-mailpit)
+    STACK_PENDING=()
+    while [ "$waited" -lt "$timeout" ]; do
+        STACK_PENDING=()
+        for c in "${names[@]}"; do
+            st=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+            hs=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$c" 2>/dev/null || true)
+            if [ "$st" != "running" ] || { [ -n "$hs" ] && [ "$hs" != "healthy" ]; }; then
+                STACK_PENDING+=("$c")
+            fi
+        done
+        if [ ${#STACK_PENDING[@]} -eq 0 ]; then return 0; fi
+        sleep "${WAIT_STEP:-3}"
+        waited=$((waited + ${WAIT_STEP:-3}))
+    done
+    return 1
+}
+
+start_stack() {
+    # Si ya hay contenedores dev-* corriendo (re-ejecución), los puertos son nuestros.
+    if [ -z "$(docker ps -q --filter 'name=^dev-' 2>/dev/null)" ]; then check_ports; fi
+
+    log "Levantando los servicios..."
+    "${DC[@]}" --project-directory "$STACK_DIR" up -d \
+        || { log_error "No pude levantar los contenedores (mira el error de arriba)."; exit 1; }
+
+    log "Esperando a que los servicios estén sanos (MariaDB puede tardar en el primer arranque)..."
+    if wait_for_containers 180; then
+        log "Los 6 contenedores están corriendo"
+        INSTALLED+=("stack-docker")
+    else
+        log_warn "Estos contenedores no quedaron sanos: ${STACK_PENDING[*]}"
+        log_warn "Revisa con:  docker compose -f $STACK_DIR/docker-compose.yml logs <servicio>"
+        FAILED+=("stack: ${STACK_PENDING[*]}")
+    fi
+
+    local url
+    for url in http://127.0.0.1/ http://127.0.0.1:8025/; do
+        if curl -fsS -m 5 -o /dev/null "$url"; then log "Responde $url"; else log_warn "No responde $url"; fi
+    done
+}
+
+# Enlaces en ~/.local/bin → bin/dev-wrapper (y los demás comandos)
+install_wrappers() {
+    local bin="$STACK_DIR/bin" dest="$USER_HOME/.local/bin" n
+    as_user mkdir -p "$dest"
+    for n in php composer laravel node npm npx pnpm yarn corepack python pip uv uvx mariadb psql redis-cli; do
+        # Si ya hay un binario real tuyo con ese nombre (p.ej. uv), lo respaldamos en vez de pisarlo
+        if [ -e "$dest/$n" ] || [ -L "$dest/$n" ]; then
+            if [ "$(readlink -f "$dest/$n")" != "$(readlink -f "$bin/dev-wrapper")" ]; then
+                as_user mv "$dest/$n" "$dest/$n.host-backup"
+                log_warn "Ya existía $dest/$n — lo respaldé como $n.host-backup"
+            fi
+        fi
+        as_user ln -sf "$bin/dev-wrapper" "$dest/$n"
+    done
+    for n in devstack newsite delsite; do
+        as_user ln -sf "$bin/$n" "$dest/$n"
+    done
+    log "Comandos instalados en $dest (php, composer, node, npm, python, uv, devstack, newsite...)"
+}
+
+write_stack_credentials() {
+    local envf="$STACK_DIR/.env" dbp rootp
+    dbp=$(env_get DB_PASSWORD "$envf")
+    rootp=$(env_get MARIADB_ROOT_PASSWORD "$envf")
+
+    save_credential ""
+    save_credential "DOCKER — STACK DE DESARROLLO"
+    save_credential "  Carpeta del stack: $STACK_DIR   (contraseñas en .env)"
+    save_credential "  Proyectos:         $PROJECTS_DIR   (sitios PHP en $PROJECTS_DIR/php)"
+    save_credential "  Contenedores:      nginx, php ${PHP_VERSION}, mariadb, postgres, redis, mailpit"
+    save_credential "  Gestionar:         devstack up | down | restart | ps | logs | shell | rebuild | info"
+    save_credential "  Importante: cierra sesión y vuelve a entrar una vez (grupo 'docker')."
+    save_credential ""
+    save_credential "SITIOS"
+    save_credential "  Índice:       http://localhost"
+    save_credential "  Nuevo sitio:  cd $PROJECTS_DIR/php && laravel new tienda && newsite tienda  -> https://tienda.test"
+    save_credential "  Borrar sitio: delsite tienda   (no borra tus archivos)"
+    save_credential ""
+    save_credential "COMANDOS (corren dentro de contenedores, desde cualquier carpeta de $PROJECTS_DIR)"
+    save_credential "  php, composer, laravel      -> contenedor php"
+    save_credential "  node, npm, npx, pnpm, yarn  -> contenedor node ${NODE_MAJOR}"
+    save_credential "  python, pip, uv, uvx        -> contenedor python ${PYTHON_VERSION}"
+    save_credential "  mariadb, psql, redis-cli    -> clientes de cada base (ya autenticados)"
+    save_credential "  En 'laravel new' responde NO a instalar npm; luego corre: npm install && npm run build"
+    save_credential ""
+    save_credential "MARIADB"
+    save_credential "  Desde el host (DBeaver): 127.0.0.1:3306  usuario ${DB_USER}  contraseña ${dbp}"
+    save_credential "  Root (solo dentro del contenedor): ${rootp}"
+    save_credential "  Cliente rápido: mariadb"
+    save_credential ""
+    save_credential "POSTGRESQL"
+    save_credential "  Desde el host: 127.0.0.1:5432  usuario ${DB_USER}  contraseña ${dbp}  base ${DB_USER}"
+    save_credential "  Cliente rápido: psql"
+    save_credential ""
+    save_credential "REDIS: 127.0.0.1:6379 (sin contraseña, solo local, 512 MB)   ·   Cliente: redis-cli"
+    save_credential "MAILPIT: bandeja http://localhost:8025   ·   SMTP 127.0.0.1:1025"
+    save_credential ""
+    save_credential ".ENV DE LARAVEL (la app corre dentro de Docker: usa el NOMBRE del servicio como host)"
+    save_credential "  DB_CONNECTION=mysql   DB_HOST=mariadb   DB_PORT=3306  DB_USERNAME=${DB_USER}  DB_PASSWORD=${dbp}"
+    save_credential "  (PostgreSQL: DB_CONNECTION=pgsql  DB_HOST=postgres  DB_PORT=5432)"
+    save_credential "  REDIS_HOST=redis  CACHE_STORE=redis  QUEUE_CONNECTION=redis"
+    save_credential "  MAIL_MAILER=smtp  MAIL_HOST=mailpit  MAIL_PORT=1025"
+    save_credential "  Apps de Node/Python (usan la red del host): usa 127.0.0.1 como host."
+    save_credential ""
+    save_credential "XDEBUG: modo trigger, puerto 9003, host host.docker.internal"
+    save_credential "  Ej: XDEBUG_TRIGGER=1 php artisan tinker   (tu IDE debe escuchar en 0.0.0.0:9003)"
+    save_credential "  Las rutas dentro del contenedor son IGUALES a las de tu host: no hace falta 'path mapping'."
+}
 
 # ------------------------------------------------------------
 # DESINSTALADOR
 # ------------------------------------------------------------
-cat > "$USER_HOME/desinstalar-entorno.sh" <<'UNINSTALL'
-#!/usr/bin/env bash
-echo "DESINSTALADOR â esto BORRA tus bases de datos. No hay vuelta atrÃ¡s."
+write_uninstaller() {
+    local target="$USER_HOME/desinstalar-entorno.sh"
+    {
+        echo '#!/usr/bin/env bash'
+        printf 'STACK_DIR=%q\n' "$STACK_DIR"
+        printf 'BIN_LINK_DIR=%q\n' "$USER_HOME/.local/bin"
+        cat <<'UNINSTALL'
+echo "DESINSTALADOR — esto BORRA tus bases de datos (volúmenes de Docker) y la carpeta $STACK_DIR."
+echo "No toca tus proyectos, ni Docker, ni Oh My Bash, ni Git/SSH, ni DBeaver/VS Code."
 read -rp "Escribe BORRAR para confirmar: " confirm
 [ "$confirm" != "BORRAR" ] && { echo "Cancelado."; exit 0; }
-sudo systemctl stop nginx mariadb postgresql redis-server valkey-server mailpit 'php*-fpm' 2>/dev/null || true
-sudo systemctl disable mailpit 2>/dev/null || true
-sudo rm -f /etc/systemd/system/mailpit.service && sudo systemctl daemon-reload
-sudo apt-get remove --purge -y 'nginx*' 'php*' 'mariadb-*' 'postgresql-*' \
-    nodejs redis-server valkey-server dbeaver-ce code 2>/dev/null || true
-sudo apt-get autoremove --purge -y
-sudo rm -rf /etc/nginx /etc/php /var/lib/mysql /var/lib/postgresql /var/lib/mailpit
-sudo add-apt-repository -y -r ppa:ondrej/php 2>/dev/null || true
-sudo rm -f /etc/apt/sources.list.d/{sury-php,pgdg,nodesource,vscode}.sources
-sudo rm -f /etc/apt/keyrings/{sury-php,pgdg,nodesource,vscode}.gpg
-sudo rm -f /usr/local/bin/{composer,newsite,delsite,mailpit} /etc/dev-env.conf
-echo "Listo. Tus proyectos en ~/proyectos NO se tocaron."
-echo "Oh My Bash tampoco: para quitarlo, en una terminal nueva ejecuta: uninstall_oh_my_bash"
+
+D=docker
+if ! docker info >/dev/null 2>&1; then D="sudo docker"; fi
+
+if command -v docker >/dev/null 2>&1; then
+    if [ -f "$STACK_DIR/docker-compose.yml" ]; then
+        (cd "$STACK_DIR" && $D compose down -v --remove-orphans) \
+            || (cd "$STACK_DIR" && docker-compose down -v --remove-orphans) || true
+    fi
+    $D volume rm dev-node-home dev-python-home 2>/dev/null || true
+    $D image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^dev-(php|node|python):' | xargs -r $D image rm 2>/dev/null || true
+fi
+
+for n in php composer laravel node npm npx pnpm yarn corepack python pip uv uvx mariadb psql redis-cli devstack newsite delsite; do
+    l="$BIN_LINK_DIR/$n"
+    if [ -L "$l" ] && [[ "$(readlink -f "$l")" == "$STACK_DIR"/bin/* ]]; then
+        rm -f "$l"
+        # Si el instalador había respaldado un binario tuyo con ese nombre, lo devolvemos a su lugar
+        if [ -e "$l.host-backup" ]; then mv "$l.host-backup" "$l"; fi
+    fi
+done
+
+sudo sed -i '/# dev-stack$/d' /etc/hosts
+rm -rf "$STACK_DIR"
+echo "Listo. Si quieres quitar Docker: sudo apt purge docker-ce docker-ce-cli containerd.io docker.io"
+echo "Para quitar Oh My Bash, en una terminal nueva: uninstall_oh_my_bash"
 UNINSTALL
-chmod +x "$USER_HOME/desinstalar-entorno.sh"
-chown "$USER_NAME":"$USER_GROUP" "$USER_HOME/desinstalar-entorno.sh"
+    } > "$target"
+    chmod +x "$target"
+    chown "$USER_NAME":"$USER_GROUP" "$target"
+}
 
 # ------------------------------------------------------------
 # RESUMEN
 # ------------------------------------------------------------
-{
-    echo ""
-    echo "========================================"
-    echo "SERVICIOS"
-    echo "========================================"
-    for s in ${INSTALLED[@]+"${INSTALLED[@]}"}; do echo "  [OK] $s"; done
-    if [ ${#FAILED[@]} -gt 0 ]; then
+show_summary() {
+    {
         echo ""
-        echo "Con advertencias:"
-        for s in "${FAILED[@]}"; do echo "  [!]  $s"; done
+        echo "========================================"
+        echo "RESUMEN"
+        echo "========================================"
+        local s
+        for s in ${INSTALLED[@]+"${INSTALLED[@]}"}; do echo "  [OK] $s"; done
+        if [ ${#FAILED[@]} -gt 0 ]; then
+            echo ""
+            echo "Con advertencias:"
+            for s in "${FAILED[@]}"; do echo "  [!]  $s"; done
+        fi
+    } >> "$CREDENTIALS_FILE"
+
+    apt-get autoremove -y && apt-get autoclean
+
+    echo ""
+    echo "=================================================="
+    echo "  INSTALACIÓN COMPLETADA"
+    echo "=================================================="
+    cat "$CREDENTIALS_FILE"
+    echo "=================================================="
+    echo "Credenciales : $CREDENTIALS_FILE"
+    echo "Log          : $LOG_FILE"
+    if [ "$MODE" = "full" ]; then
+        echo "Stack        : $STACK_DIR   (comando: devstack)"
+        echo "Desinstalador: $USER_HOME/desinstalar-entorno.sh"
     fi
-} >> "$CREDENTIALS_FILE"
+    echo "=================================================="
+    if [ "$MODE" = "full" ]; then
+        log_warn "CIERRA SESIÓN Y VUELVE A ENTRAR: hasta entonces php, composer, node... no podrán usar Docker."
+    else
+        log_warn "Cierra esta terminal y abre una nueva para ver el prompt nuevo."
+    fi
+}
 
-apt-get autoremove -y && apt-get autoclean
+# ------------------------------------------------------------
+# PRINCIPAL
+# ------------------------------------------------------------
+main() {
+    require_root
+    init_context
+    setup_logging
+    choose_mode
+    init_credentials
 
-echo ""
-echo "=================================================="
-echo "  INSTALACIÃN COMPLETADA"
-echo "=================================================="
-cat "$CREDENTIALS_FILE"
-echo "=================================================="
-echo "Credenciales : $CREDENTIALS_FILE"
-echo "Log          : $LOG_FILE"
-echo "Desinstalador: $USER_HOME/desinstalar-entorno.sh"
-echo "=================================================="
-log_warn "Cierra esta terminal y abre una nueva para ver el prompt nuevo y el PATH."
+    setup_base
+    setup_omb
+    setup_path
+    setup_tools
+    setup_git
+
+    if [ "$MODE" = "full" ]; then
+        setup_gui_apps
+        setup_mkcert
+        setup_docker_engine
+        write_stack_files
+        build_images
+        start_stack
+        install_wrappers
+        write_stack_credentials
+        write_uninstaller
+    fi
+
+    show_summary
+}
+
+# Se ejecuta solo si corres el archivo (no si lo cargas con "source" para pruebas)
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
